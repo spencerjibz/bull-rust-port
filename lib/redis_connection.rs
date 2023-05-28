@@ -38,7 +38,7 @@ impl<'b> RedisConnection<'b> {
                 let password = *map.get(&"password").unwrap_or(&"");
                 let username = *map.get(&"username").unwrap_or(&"default");
 
-                let url = format!("redis://{}:{}@{}:{port}", username, password, host);
+                let url = format!("redis://{username}:{password}@{host}:{port}");
                 //println!("{}",url);
                 let client = Client::open(url)?;
                 let conn = client.get_async_connection().await?;

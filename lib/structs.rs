@@ -5,6 +5,7 @@ pub use derive_redis_json::RedisJsonValue;
 use rand::prelude::*;
 pub use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, default, fmt::Display};
+use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
 pub struct KeepJobs {

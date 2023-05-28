@@ -67,7 +67,7 @@ impl<'a, D: Deserialize<'a> + Serialize, R: Deserialize<'a> + Serialize> Job<'a,
     }
 
     async fn from_json(
-        &'a self,
+    
        mut  queue: &'a Queue<'a>,
         json: &'a JobJsonRaw,
         job_id: String,
@@ -98,20 +98,21 @@ impl<'a, D: Deserialize<'a> + Serialize, R: Deserialize<'a> + Serialize> Job<'a,
 
         Ok(job)
     }
-    pub fn opts_from_json <'k>(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
+    pub fn opts_from_json(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
         let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
         Ok(opts)
     }
 
- pub  async fn from_id (&'a self,queue: &'a  mut Queue<'a >, job_id:String) -> anyhow::Result<Job<'a,D, R>> {
+ pub  async fn from_id (queue: &'a  mut Queue<'a >, job_id:String) -> anyhow::Result<Job<'a,D, R>> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
 
         let raw_data:JobJsonRaw = queue.client.hgetall(key)?; 
         
-        let job=  self.from_json(queue, &'static raw_data.clone(), job_id).await?;
+         //let job=  self.from_json(queue, &'static raw_data.clone(), job_id).await?;
         
-        Ok(job)
+
+        todo!()
     }
 
     

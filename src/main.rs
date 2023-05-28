@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     // println!("{:#?}", worker.clone());
     //let j   = serde_json::to_string(&keeps_opts).unwrap_or("{}".to_string());
 
-    println!(" {:?}", print_type_of(&[["",""], ["ve","vece"]]));
+    println!(" {value:?}");
     println!("{:?}", n.elapsed());
     Ok(())
 }

@@ -42,7 +42,7 @@ impl<'s> Stripts<'s> {
             "events",
         ];
         for name in names {
-            keys.insert(name, format!("{}:{}:{}", prefix, queue_name, name));
+            keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
              "addJob" =>  Script::new(&Self::get_script("addJob-8.lua")),
@@ -252,7 +252,7 @@ impl<'s> Stripts<'s> {
         fetch_next: bool,
     ) -> anyhow::Result<(NextJobData)> {
         let timestamp = self.generate_timestamp()?;
-        let metrics_key = self.to_key(&format!("metrics:{}", target));
+        let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
             target,
@@ -354,7 +354,7 @@ impl<'s> Stripts<'s> {
         let code = ErrorCode::try_from(num).unwrap();
         match code {
             code_job_not_exist => {
-                anyhow::Error::msg(format!("Missing Key for job ${}. {}", job_id, command))
+                anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
             }
             JobLockNotExist => {
                 anyhow::Error::msg(format!("missing lock for job {job_id}. {command}"))
