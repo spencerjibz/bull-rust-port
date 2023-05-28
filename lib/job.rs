@@ -1,4 +1,4 @@
-use std::{clone, borrow::Borrow};
+use std::{borrow::Borrow, clone};
 
 use super::*;
 use redis::Commands;
@@ -67,13 +67,12 @@ impl<'a, D: Deserialize<'a> + Serialize, R: Deserialize<'a> + Serialize> Job<'a,
     }
 
     async fn from_json(
-    
-       mut  queue: &'a Queue<'a>,
+        mut queue: &'a Queue<'a>,
         json: &'a JobJsonRaw,
         job_id: String,
     ) -> anyhow::Result<Job<'a, D, R>> {
         // use serde_json to convert to job;
-        let data = serde_json::from_str( &json.data)?;
+        let data = serde_json::from_str(&json.data)?;
         let opts = serde_json::from_str::<JobOptions>(&json.opts)?;
         let mut job = Job::<'a, D, R>::new(&json.data, queue, data, opts).await?;
         job.id = job_id.to_string();
@@ -102,20 +101,47 @@ impl<'a, D: Deserialize<'a> + Serialize, R: Deserialize<'a> + Serialize> Job<'a,
         let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
         Ok(opts)
     }
-
- pub  async fn from_id (queue: &'a  mut Queue<'a >, job_id:String) -> anyhow::Result<Job<'a,D, R>> {
-        // use redis to get the job;
-        let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
-
-        let raw_data:JobJsonRaw = queue.client.hgetall(key)?; 
-        
-         //let job=  self.from_json(queue, &'static raw_data.clone(), job_id).await?;
-        
-
-        todo!()
-    }
-
-    
 }
 
+pub async fn from_id<'a, D: Deserialize<'a> + Serialize, R: Deserialize<'a> + Serialize>(
+    queue: &'a mut Queue<'a>,
+    job_id: String,
+) -> anyhow::Result<Job<'a, D, R>> {
+    // use redis to get the job;
+    let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
 
+    let raw_data: JobJsonRaw = queue.client.hgetall(key)?;
+
+    //let job=  self.from_json(queue,  raw_data.clone(), job_id).await?;
+
+    todo!()
+}
+#[cfg(test)]
+#[test]
+fn test_job() {
+    use dotenv_codegen::dotenv;
+    use std::collections::HashMap;
+    use std::env;
+    use std::time::{Instant, SystemTime};
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let pass = dotenv!("REDIS_PASSWORD");
+        let mut config = HashMap::new();
+        config.insert("password", pass);
+        let redis_opts = RedisOpts::Config(config);
+
+        let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None })
+            .await
+            .unwrap();
+        let job = Job::<'_, String, String>::new(
+            "test",
+            &queue,
+            "test".to_string(),
+            JobOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(job.name, "test");
+    });
+}
