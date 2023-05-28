@@ -28,10 +28,14 @@ async fn main() -> anyhow::Result<()> {
     // get the values and log it;
     let value: WorkerOptions = con.get("worker").await?;
 
-    // println!("{:#?}", worker.clone());
-    //let j   = serde_json::to_string(&keeps_opts).unwrap_or("{}".to_string());
+    let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:172").await?;
+     let json = JobJsonRaw::from_map(result)?;
+    //json.save_to_file("test.json")?;
 
-    println!(" {:?}", print_type_of(&[["",""], ["ve","vece"]]));
+    // println!("{:#?}", worker.clone());
+   // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
+
+    println!(" {:#?}", json);
     println!("{:?}", n.elapsed());
     Ok(())
 }

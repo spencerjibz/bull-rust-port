@@ -42,19 +42,19 @@ impl<'s> Stripts<'s> {
             "events",
         ];
         for name in names {
-            keys.insert(name, format!("{}:{}:{}", prefix, queue_name, name));
+            keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
-             "addJob" =>  Script::new(&Self::get_script("addJob-8.lua")),
-            "extendLock" =>  Script::new(&Self::get_script("extendLock-2.lua")),
-            "getCounts" =>  Script::new(&Self::get_script("getCounts-1.lua")),
-            "obliterate" =>  Script::new(&Self::get_script("obliterate-2.lua")),
-            "pause" => Script::new(&Self::get_script("pause-4.lua")),
-            "moveToActive" =>  Script::new(&Self::get_script("moveToActive-9.lua")),
-            "moveToFinished" =>  Script::new(&Self::get_script("moveToFinished-12.lua")),
-            "moveStalledJobsToWait"=>  Script::new(&Self::get_script("moveStalledJobsToWait-8.lua")),
-            "retryJobs" => Script::new(&Self::get_script("retryJobs-6.lua")),
-            "updateProgress"=>  Script::new(&Self::get_script("updateProgress-2.lua")),
+             "addJob" =>  Script::new(&get_script("addJob-8.lua")),
+            "extendLock" =>  Script::new(&get_script("extendLock-2.lua")),
+            "getCounts" =>  Script::new(&get_script("getCounts-1.lua")),
+            "obliterate" =>  Script::new(&get_script("obliterate-2.lua")),
+            "pause" => Script::new(&get_script("pause-4.lua")),
+            "moveToActive" =>  Script::new(&get_script("moveToActive-9.lua")),
+            "moveToFinished" =>  Script::new(&get_script("moveToFinished-12.lua")),
+            "moveStalledJobsToWait"=>  Script::new(&get_script("moveStalledJobsToWait-8.lua")),
+            "retryJobs" => Script::new(&get_script("retryJobs-6.lua")),
+            "updateProgress"=>  Script::new(&get_script("updateProgress-2.lua")),
 
         };
         Self {
@@ -74,11 +74,6 @@ impl<'s> Stripts<'s> {
             .collect()
     }
 
-    fn get_script(script_name: &'static str) -> String {
-        use std::fs;
-
-        fs::read_to_string(format!(" /comands/{script_name}")).unwrap()
-    }
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
         job: &Job<'s, D, R>,
@@ -252,7 +247,7 @@ impl<'s> Stripts<'s> {
         fetch_next: bool,
     ) -> anyhow::Result<(NextJobData)> {
         let timestamp = self.generate_timestamp()?;
-        let metrics_key = self.to_key(&format!("metrics:{}", target));
+        let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
             target,
@@ -354,7 +349,7 @@ impl<'s> Stripts<'s> {
         let code = ErrorCode::try_from(num).unwrap();
         match code {
             code_job_not_exist => {
-                anyhow::Error::msg(format!("Missing Key for job ${}. {}", job_id, command))
+                anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
             }
             JobLockNotExist => {
                 anyhow::Error::msg(format!("missing lock for job {job_id}. {command}"))
@@ -535,3 +530,23 @@ pub fn print_type_of<T>(_: &T) -> String {
 
 type Map = HashMap<String, String>;
 type NextJobData = Option<(Option<Map>, Option<Map>)>;
+
+// test
+
+pub fn get_script(script_name: &'static str) -> String {
+    use std::fs;
+
+    fs::read_to_string(format!("commands/{script_name}"))
+        .expect("Something went wrong reading the file")
+}
+
+#[cfg(test)]
+#[test]
+fn test_get_script() {
+    // read out the file addJob-8.lua  and return a string with contents
+    // of the
+
+    let script = get_script("addJob-8.lua");
+    // println!("{:?}", script);
+    assert!(!script.is_empty());
+}
