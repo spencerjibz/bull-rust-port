@@ -43,15 +43,15 @@ impl<'c> Queue<'c> {
         })
     }
     pub async fn add<
-        D: Deserialize<'c> + Serialize + Clone,
+        D: Deserialize<'c> + Serialize + Clone ,
         R: Deserialize<'c> + Serialize + FromRedisValue,
     >(
         &'c self,
-        name: &'c str,
+        name: &'static str,
         data: D,
         opts: JobOptions,
     ) -> anyhow::Result<Job<D, R>> {
-        let mut job = Job::<'c, D, R>::new(name, self, data, opts).await?;
+        let mut job = Job::<D, R>::new(name, self, data, opts).await?;
         let job_id = self.scripts.borrow_mut().add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
 
