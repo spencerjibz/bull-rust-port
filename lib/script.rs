@@ -547,6 +547,6 @@ fn test_get_script() {
     // of the
 
     let script = get_script("addJob-8.lua");
-    println!("{:?}", script);
+    // println!("{:?}", script);
     assert!(!script.is_empty());
 }
