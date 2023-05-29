@@ -39,10 +39,9 @@ impl<'a, D: Deserialize<'a> + Clone, R: Deserialize<'a> + Serialize> Job<'a, D, 
         data: D,
         opts: JobOptions,
     ) -> anyhow::Result<Job<'a, D, R>> {
-        let new_conn = queue.conn.conn_options.clone();
         let prefix = queue.prefix;
         let queue_name = queue.name;
-        let dup_conn = RedisConnection::init(new_conn).await?;
+        let dup_conn = queue.manager.pool.get().await?;
 
         Ok(Self {
             opts: opts.clone(),
@@ -63,7 +62,7 @@ impl<'a, D: Deserialize<'a> + Clone, R: Deserialize<'a> + Serialize> Job<'a, D, 
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: script::Stripts::<'a>::new(prefix, queue_name, dup_conn),
+            scripts: script::Stripts::<'a>::new(prefix, queue_name, dup_conn)
         })
     }
 
@@ -116,7 +115,7 @@ impl<'a, D: Deserialize<'a> + Clone, R: Deserialize<'a> + Serialize> Job<'a, D, 
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
 
-        let raw_data: HashMap<String, String> = queue.client.hgetall(key)?;
+        let raw_data: HashMap<String, String> = queue.client.hgetall(key).await?;
         let raw_string = serde_json::to_string(&raw_data)?;
 
         let job = Self::from_json(queue, raw_string, job_id).await?;

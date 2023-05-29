@@ -1,14 +1,19 @@
+pub use async_trait::async_trait;
+pub use deadpool_redis::{
+    redis::{AsyncCommands, Client, RedisResult},
+    Connection, Pool, Runtime,
+};
 use futures::prelude::*;
-pub use redis::{aio::Connection, AsyncCommands, Client, RedisError, RedisResult};
 
 use super::*;
+
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, default};
 
 pub struct RedisConnection<'b> {
     pub conn: Connection,
-    pub client: Client,
     pub conn_options: RedisOpts<'b>,
+    pub pool: Pool,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
@@ -18,16 +23,17 @@ pub enum RedisOpts<'a> {
 }
 
 impl<'b> RedisConnection<'b> {
-    pub async fn init(redis_options: RedisOpts<'b>) -> RedisResult<RedisConnection> {
+    pub async fn init(redis_options: RedisOpts<'b>) -> anyhow::Result<RedisConnection> {
         use RedisOpts::*;
         match &redis_options {
             Url(s) => {
-                let client = Client::open(*s)?;
-                let conn = client.get_async_connection().await?;
+                let mut cfg = deadpool_redis::Config::from_url(*s);
+                let client = cfg.create_pool(Some(Runtime::Tokio1))?;
+                let conn = client.get().await?;
                 Ok(Self {
                     conn,
-                    client,
                     conn_options: redis_options.clone(),
+                    pool: client,
                 })
             }
             Config(map) => {
@@ -40,15 +46,44 @@ impl<'b> RedisConnection<'b> {
 
                 let url = format!("redis://{username}:{password}@{host}:{port}");
                 //println!("{}",url);
-                let client = Client::open(url)?;
-                let conn = client.get_async_connection().await?;
+                let mut cfg = deadpool_redis::Config::from_url(url);
+                let client = cfg.create_pool(Some(Runtime::Tokio1))?;
+                let conn = client.get().await?;
 
                 Ok(Self {
                     conn,
-                    client,
+                    pool: client,
                     conn_options: redis_options.clone(),
                 })
             }
         }
+    }
+}
+
+#[async_trait]
+pub trait RedisConnectionTrait {
+    async fn disconnect(&self) -> anyhow::Result<()>;
+    async fn close(&self) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+impl RedisConnectionTrait for RedisConnection<'_> {
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        let mut conn = self.pool.get().await?;
+        let _ = redis::cmd("CLIENT")
+            .arg("KILL")
+            .arg("TYPE")
+            .arg("normal")
+            .query_async::<_, ()>(&mut conn)
+            .await?;
+
+        Ok(())
+    }
+    async fn close(&self) -> anyhow::Result<()> {
+        let mut conn = self.pool.get().await?;
+        let _ = redis::cmd("SHUTDOWN")
+            .query_async::<_, ()>(&mut conn)
+            .await?;
+        Ok(())
     }
 }
