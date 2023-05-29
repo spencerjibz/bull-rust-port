@@ -47,7 +47,7 @@ impl<'c> Queue<'c> {
         })
     }
     pub async fn add<
-        D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static,
+        D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static + std::fmt::Debug,
         R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
     >(
         &'c self,
@@ -164,5 +164,18 @@ impl<'c> Queue<'c> {
     }
     pub async fn close(&self) {
         self.manager.close().await;
+    }
+}
+
+// implement fmt::Debug for Queue
+use std::fmt;
+impl fmt::Debug for Queue<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Queue")
+            .field("prefix", &self.prefix)
+            .field("name", &self.name)
+            .field("opts", &self.opts)
+            //.field("manager", &self.manager) // sensitive data
+            .finish()
     }
 }
