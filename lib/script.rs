@@ -24,7 +24,7 @@ pub struct Stripts<'s> {
 }
 
 impl<'s> Stripts<'s> {
-    pub fn new(prefix: &'s str, queue_name: &'s str, conn:Connection) -> Self {
+    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Connection) -> Self {
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",

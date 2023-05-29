@@ -13,6 +13,7 @@ use crate::RedisConnectionTrait;
 use redis::streams::StreamMaxlen;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 pub struct Queue<'c> {
     pub prefix: &'c str,
@@ -46,8 +47,8 @@ impl<'c> Queue<'c> {
         })
     }
     pub async fn add<
-        D: Deserialize<'c> + Serialize + Clone,
-        R: Deserialize<'c> + Serialize + FromRedisValue,
+        D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static,
+        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
     >(
         &'c self,
         name: &'static str,
@@ -61,7 +62,7 @@ impl<'c> Queue<'c> {
         Ok(job)
     }
 
-    pub async fn pause<R: Deserialize<'c> + Serialize + FromRedisValue>(
+    pub async fn pause<R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static>(
         &'c self,
     ) -> anyhow::Result<R> {
         let result = self.scripts.borrow_mut().pause(true).await?;
@@ -74,7 +75,7 @@ impl<'c> Queue<'c> {
         Ok(result)
     }
 
-    pub async fn is_paused<RV: FromRedisValue>(&mut self) -> anyhow::Result<RV> {
+    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&mut self) -> anyhow::Result<RV> {
         let b = format!("bull:{}:meta", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
 
@@ -107,7 +108,10 @@ impl<'c> Queue<'c> {
         Ok(())
     }
 
-    async fn trim_events<RV: FromRedisValue>(&mut self, max_length: usize) -> anyhow::Result<RV> {
+    async fn trim_events<RV: FromRedisValue + Send + Sync>(
+        &mut self,
+        max_length: usize,
+    ) -> anyhow::Result<RV> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
         let result = self
