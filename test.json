@@ -1,0 +1,17 @@
+{
+  "id": "",
+  "name": "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP",
+  "data": "{\"socketId\":\"0Qucqmyj_Z92MendAAL3\",\"cid\":\"QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP\",\"fileID\":\"646f9c2ecbcc514b64578551\",\"sizes\":[{\"width\":1080,\"height\":1920},{\"width\":720,\"height\":1280},{\"width\":480,\"height\":640}],\"userID\":\"644143ef3515c20d0ce241ec\",\"trackingID\":\"QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP\"}",
+  "delay": "0",
+  "opts": "{\"removeOnFail\":{\"age\":3600},\"removeOnComplete\":{\"age\":86400},\"delay\":0,\"attempts\":0}",
+  "progress": "",
+  "attempts_made": "",
+  "timestamp": "1685036078165",
+  "failed_reason": "",
+  "stack_trace": [],
+  "return_value": "",
+  "parent": null,
+  "rjk": null,
+  "finished_on": null,
+  "processed_on": null
+}
