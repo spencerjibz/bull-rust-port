@@ -43,7 +43,7 @@ impl<'c> Queue<'c> {
         })
     }
     pub async fn add<
-        D: Deserialize<'c> + Serialize + Clone ,
+        D: Deserialize<'c> + Serialize + Clone,
         R: Deserialize<'c> + Serialize + FromRedisValue,
     >(
         &'c self,
