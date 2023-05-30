@@ -8,8 +8,13 @@ use std::time::{Instant, SystemTime};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // print backtrace if either Ru
+     use std::backtrace::Backtrace;
+    // or forcibly capture the backtrace regardless of environment variable configuration
+    println!("Custom backtrace: {}", Backtrace::force_capture());
     let n = Instant::now();
     let pass = dotenv!("REDIS_PASSWORD");
+
 
     let mut config = HashMap::new();
     config.insert("password", pass);
