@@ -16,11 +16,11 @@ pub struct KeepJobs {
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct JobOptions {
-    pub job_id: String,
-    pub timestamp: i64, // timestamp when  the job was created
+    pub job_id: Option<String>,
+    pub timestamp: Option<i64>, // timestamp when  the job was created
     pub delay: i64,     // number of milliseconds to wait until this job can be processed
     pub attempts: i64,  // total number of attempts to try the job until it completes.
-    pub remove_on_completion: RemoveOnCompletionOrFailure,
+    pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub fail_parent_on_failure: bool, // if true, moves parent to failed
 }
@@ -42,11 +42,11 @@ impl Default for JobOptions {
             .as_secs_f32();
         //dbg!("{} {}", id, timestamp);
         Self {
-            timestamp: (timestamp * 1000.0).round() as i64,
-            job_id: id.to_string(),
+            timestamp: Some((timestamp * 1000.0).round() as i64),
+            job_id: Some(id.to_string()),
             delay: 0,
             attempts: 0,
-            remove_on_completion: RemoveOnCompletionOrFailure::default(),
+            remove_on_complete: RemoveOnCompletionOrFailure::default(),
             remove_on_fail: RemoveOnCompletionOrFailure::default(),
             fail_parent_on_failure: false,
         }
