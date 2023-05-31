@@ -3,6 +3,7 @@ use crate::{job::Job, redis_connection::*};
 use crate::{JobOptions, KeepJobs, WorkerOptions};
 use anyhow::Error;
 use anyhow::Ok;
+use anyhow::Result;
 use futures::{future::ok, stream::TryFilterMap};
 use maplit::hashmap;
 pub use redis::Script;
@@ -19,11 +20,11 @@ pub struct Stripts<'s> {
     pub queue_name: &'s str,
     pub keys: HashMap<&'s str, String>,
     pub commands: ScriptCommands<'s>,
-    pub connection: RedisConnection<'s>,
+    pub connection: Connection,
 }
 
 impl<'s> Stripts<'s> {
-    pub fn new(prefix: &'s str, queue_name: &'s str, conn: RedisConnection<'s>) -> Self {
+    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Connection) -> Self {
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",
@@ -115,7 +116,7 @@ impl<'s> Stripts<'s> {
             .arg(packed_args)
             .arg(json_data)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         Ok(result)
     }
@@ -134,7 +135,7 @@ impl<'s> Stripts<'s> {
             .unwrap()
             .key(keys)
             .arg(f_ags)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         Ok(result)
     }
@@ -164,7 +165,7 @@ impl<'s> Stripts<'s> {
             .arg(count)
             .arg(timestamp)
             .arg(current)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         Ok(result)
     }
@@ -178,7 +179,7 @@ impl<'s> Stripts<'s> {
             .unwrap()
             .key(keys)
             .arg(count)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
 
         if result == -1 {
@@ -224,7 +225,7 @@ impl<'s> Stripts<'s> {
             .arg(timestamp)
             .arg(id)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
 
         Ok(result)
@@ -292,7 +293,7 @@ impl<'s> Stripts<'s> {
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         use std::any::{Any, TypeId};
         if let Some(res) = result {
@@ -408,7 +409,7 @@ impl<'s> Stripts<'s> {
             .arg(token)
             .arg(duration.to_string())
             .arg(job_id)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         Ok(result)
     }
@@ -438,7 +439,7 @@ impl<'s> Stripts<'s> {
             .arg(stalled)
             .arg(timestamp)
             .arg(stalled_interval)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
         Ok(result)
     }
@@ -460,7 +461,7 @@ impl<'s> Stripts<'s> {
             .key(&keys)
             .arg(job_id)
             .arg(progress)
-            .invoke_async(&mut self.connection.conn)
+            .invoke_async(&mut self.connection)
             .await?;
 
         match result {
@@ -521,6 +522,23 @@ impl<'s> Stripts<'s> {
             fetch_next,
         )
         .await
+    }
+
+    pub async fn get_counts(&mut self, mut types: impl Iterator<Item = &str>) -> Result<Vec<i64>> {
+        let keys = self.get_keys(&[""]);
+
+        let transformed_types: Vec<_> = types
+            .map(|t| if t == "waiting" { "wait" } else { t })
+            .collect();
+        let result: Vec<_> = self
+            .commands
+            .get("getCounts")
+            .unwrap()
+            .key(keys)
+            .arg(transformed_types)
+            .invoke_async(&mut self.connection)
+            .await?;
+        Ok(result)
     }
 }
 
