@@ -6,7 +6,7 @@ use tokio::task::{self, JoinHandle};
 use futures::future::{BoxFuture, Future, FutureExt};
 use uuid::Uuid;
 
-type AsyncCB = dyn Fn(Vec<u8>) -> BoxFuture<'static, ()> + Send + Sync + 'static;
+pub type AsyncCB = dyn Fn(Vec<u8>) -> BoxFuture<'static, ()> + Send + Sync + 'static;
 pub struct AsyncListener {
     callback: Arc<AsyncCB>,
     limit: Option<u64>,
@@ -83,7 +83,7 @@ impl AsyncEventEmitter {
 
     pub async fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug,
+        for<'de> T: Deserialize<'de> + std::fmt::Debug ,
         F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
         let id = Uuid::new_v4().to_string();
@@ -149,38 +149,106 @@ impl fmt::Debug for AsyncEventEmitter {
 #[cfg(test)]
 
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use bincode::{options, DefaultOptions};
     use tokio::test;
+
+  #[derive(Serialize, Deserialize, Debug)]
+    struct Date {
+        month: String,
+        day: String,
+    }
+    #[derive(Serialize, Deserialize, Debug)]
+    struct Time {
+        hour: String,
+        minute: String,
+    }
+    #[derive(Serialize, Deserialize, Debug)]
+    struct DateTime(Date, Time);
+
+
     #[tokio::test]
+  
     async fn test_async_event() {
         let mut event_emitter = AsyncEventEmitter::new();
 
-        #[derive(Serialize, Deserialize, Debug)]
-        struct Date {
-            month: String,
-            day: String,
-        }
+        let date = Date {
+            month: "January".to_string(),
+            day: "Tuesday".to_string(),
+        };
 
         event_emitter
             .on("LOG_DATE", |date: Date| {
-                async move { println!("{:#?}", date) }.boxed()
+                async move { /*Do something here */ }.boxed()
             })
             .await;
         event_emitter
             .on("LOG_DATE", |date: Date| {
-                async move { println!("{:#?}", date.month) }.boxed()
+                async move { println!(" emitted data: {:#?}", date) }.boxed()
             })
             .await;
         event_emitter
             .emit(
                 "LOG_DATE",
-                Date {
-                    month: "January".to_string(),
-                    day: "Tuesday".to_string(),
-                },
+                date,
+            )
+            .await;
+          println!("{:#?}", event_emitter);
+         assert!(event_emitter.listeners.get("LOG_DATE").is_some());
+    }
+
+   
+    #[tokio::test]
+    async fn test_emit_multiple_args() {
+        let mut event_emitter = AsyncEventEmitter::new();
+        let name = "LOG_DATE".to_string();
+        event_emitter
+            .on("LOG_DATE", |tup: (Date,String)| {
+                async move { println!("{:#?}", tup) }.boxed()
+            })
+            .await;
+       
+        event_emitter
+            .emit(
+                "LOG_DATE",
+                 (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name
+                ),
             )
             .await;
 
         println!("{:?}", event_emitter.listeners);
+    }
+
+    #[tokio::test]
+    async fn bincode_encode_test() {
+        let example = DateTime(
+            Date {
+                month: "January".to_string(),
+                day: "Tuesday".to_string(),
+            },
+            Time {
+                hour: "12".to_string(),
+                minute: "30".to_string(),
+            },
+        );
+        let encoded: Vec<u8> = bincode::serialize(&example).unwrap();
+        let decoded: (Date,Time)= bincode::deserialize(&encoded).unwrap();
+        #[derive(Serialize, Deserialize, Debug)]
+         struct DateTimeContainer {
+            data: RefCell<DateTime>
+         }
+        
+         let mut container = DateTimeContainer {
+             data: RefCell::new(example)
+         };
+
+        println!("{:#?}", container.data);
     }
 }

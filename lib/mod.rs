@@ -12,3 +12,4 @@ mod job;
 pub use job::*;
 pub mod timer;
 pub mod emitter;
+pub mod worker;
