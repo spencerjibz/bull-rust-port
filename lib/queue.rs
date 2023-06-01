@@ -20,7 +20,7 @@ pub struct Queue<'c> {
     pub name: &'c str,
     pub client: Connection,
     pub opts: QueueOptions<'c>,
-    pub scripts: RefCell<script::Stripts<'c>>,
+    pub scripts: RefCell<script::Scripts<'c>>,
     pub manager: RedisConnection<'c>,
 }
 
@@ -35,7 +35,7 @@ impl<'c> Queue<'c> {
         let new_connection = RedisConnection::init(redis_opts.clone()).await?;
         let last_connection = RedisConnection::init(redis_opts.clone()).await?;
         let connection = RedisConnection::init(redis_opts).await?;
-        let scripts = script::Stripts::new(prefix, name, connection.conn);
+        let scripts = script::Scripts::new(prefix, name, connection.conn);
 
         Ok(Self {
             prefix,
