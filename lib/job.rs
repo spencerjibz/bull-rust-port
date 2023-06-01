@@ -11,12 +11,12 @@ pub struct Job<'a, D, R> {
     pub attempts_made: i64,
     pub attempts: i64,
     pub delay: i64,
-    pub id: String,
-    pub progress: i8, // 0 to 100
+    pub id: String,       // jsonString
+    pub progress: String, // 0 to 100
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: script::Stripts<'a>,
+    scripts: script::Scripts<'a>,
     pub repeat_job_key: Option<&'a str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<&'a str>,
@@ -29,8 +29,10 @@ pub struct Job<'a, D, R> {
 impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Serialize>
     Job<'a, D, R>
 {
-    fn update_progress(&mut self, progress: i8) {
-        self.progress = progress;
+    async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
+        self.progress = serde_json::to_string(&progress).unwrap();
+        self.scripts.update_progress(&self.id, progress).await
+
         // return a script to update the progress;
     }
 
@@ -49,7 +51,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
             queue,
             name,
             id: opts.job_id.unwrap(),
-            progress: 0,
+            progress: String::default(),
             timestamp: opts.timestamp.unwrap(),
             delay: opts.delay,
             attempts_made: 0,
@@ -63,7 +65,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: script::Stripts::<'a>::new(prefix, queue_name, dup_conn),
+            scripts: script::Scripts::<'a>::new(prefix, queue_name, dup_conn),
         })
     }
 
@@ -86,7 +88,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
 
         let mut job = Self::new(name, queue, data, opts).await?;
         job.id = job_id.to_string();
-        job.progress = json.progress.parse::<i8>().unwrap_or(0);
+        job.progress = json.progress.to_string();
         job.attempts_made = json.attempts_made.parse::<i64>().unwrap_or_default();
         job.timestamp = json.timestamp.parse::<i64>()?;
         job.delay = json.delay.parse::<i64>()?;
@@ -209,7 +211,7 @@ mod tests {
             )
             .await
             .unwrap();
-            println!("{:#?}", queue);
+            println!("{:#?}", job);
             assert_eq!(job.name, "test");
         });
     }

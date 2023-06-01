@@ -455,7 +455,7 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
-    async fn update_progress<P: Serialize>(
+    pub async fn update_progress<P: Serialize>(
         &mut self,
         job_id: &str,
         progress: P,
@@ -552,6 +552,9 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
+
+     
+    
 }
 
 
