@@ -15,7 +15,7 @@ pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
 use crate::enums::ErrorCode::{self, *};
 use std::any::{self, Any};
 
-pub struct Stripts<'s> {
+pub struct Scripts<'s> {
     pub prefix: &'s str,
     pub queue_name: &'s str,
     pub keys: HashMap<&'s str, String>,
@@ -23,7 +23,19 @@ pub struct Stripts<'s> {
     pub connection: Connection,
 }
 
-impl<'s> Stripts<'s> {
+// debug implementation for Scripts
+impl<'s> std::fmt::Debug for Scripts<'s> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scripts")
+            .field("prefix", &self.prefix)
+            .field("queue_name", &self.queue_name)
+            .field("keys", &self.keys)
+            .field("commands", &self.commands)
+            .finish()
+    }
+}
+
+impl<'s> Scripts<'s> {
     pub fn new(prefix: &'s str, queue_name: &'s str, conn: Connection) -> Self {
         let mut keys = HashMap::with_capacity(14);
         let names = [
@@ -542,9 +554,13 @@ impl<'s> Stripts<'s> {
     }
 }
 
+
+
 pub fn print_type_of<T>(_: &T) -> String {
     std::any::type_name::<T>().to_string()
 }
+
+
 
 type Map = HashMap<String, String>;
 type NextJobData = Option<(Option<Map>, Option<Map>)>;
