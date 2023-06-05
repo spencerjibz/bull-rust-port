@@ -18,8 +18,8 @@ pub struct KeepJobs {
 pub struct JobOptions {
     pub job_id: Option<String>,
     pub timestamp: Option<i64>, // timestamp when  the job was created
-    pub delay: i64,     // number of milliseconds to wait until this job can be processed
-    pub attempts: i64,  // total number of attempts to try the job until it completes.
+    pub delay: i64,             // number of milliseconds to wait until this job can be processed
+    pub attempts: i64,          // total number of attempts to try the job until it completes.
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub fail_parent_on_failure: bool, // if true, moves parent to failed
@@ -109,6 +109,7 @@ pub struct QueueOptions<'d> {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 // make all fields public
+#[serde(rename_all = "snake_case")]
 pub struct JobJsonRaw {
     #[serde(borrow)]
     pub id: &'static str,
