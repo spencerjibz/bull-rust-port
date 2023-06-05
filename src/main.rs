@@ -9,12 +9,11 @@ use std::time::{Instant, SystemTime};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // print backtrace if either Ru
-     use std::backtrace::Backtrace;
+    use std::backtrace::Backtrace;
     // or forcibly capture the backtrace regardless of environment variable configuration
-    println!("Custom backtrace: {}", Backtrace::force_capture());
+
     let n = Instant::now();
     let pass = dotenv!("REDIS_PASSWORD");
-
 
     let mut config = HashMap::new();
     config.insert("password", pass);
@@ -34,17 +33,16 @@ async fn main() -> anyhow::Result<()> {
     // get the values and log it;
     let value: WorkerOptions = con.get("worker").await?;
 
-    let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:172").await?;
+    let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:202").await?;
 
     //json.save_to_file("test.json")?;
     let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None }).await?;
     // println!("{:#?}", worker.clone());
     // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
     let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
-
-    let job = Job::<Data, Option<String>>::from_json(&queue, contents, "172").await?;
-    println!("{:#?}", job);
-
+    
+    let job = Job::<Data, Option<String>>::from_json(&queue, contents, "202").await?;
+     println!("{:#?}", job);
     // println!(" {value:#?}");
     println!("{:?}", n.elapsed());
     Ok(())
