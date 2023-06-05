@@ -77,12 +77,14 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
         // use serde_json to convert to job;
 
         let json = JobJsonRaw::fromStr(to_static_str(raw_string))?;
+        //println!("json: {:?}", json);
 
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
 
         let d = json.data;
         let data = serde_json::from_str::<D>(d)?;
+        // println!("data: {:?}", data);
 
         //let  return_value = serde_json::from_str::<R>(json.return_value)?;
 
@@ -184,6 +186,7 @@ pub struct Size {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Ok;
     use dotenv_codegen::dotenv;
     use std::collections::HashMap;
     use std::env;
@@ -211,7 +214,7 @@ mod tests {
             )
             .await
             .unwrap();
-            println!("{:#?}", job);
+            //println!("{:#?}", job);
             assert_eq!(job.name, "test");
         });
     }
@@ -229,17 +232,17 @@ mod tests {
                 .unwrap();
 
             let result: HashMap<String, String> =
-                queue.client.hgetall("bull:pinningQueue:172").await.unwrap();
-            //let json = JobJsonRaw::from_map(result)?;
-            //json.save_to_file("test.json")?;
+                queue.client.hgetall("bull:pinningQueue:201").await.unwrap();
+            //let json = JobJsonRaw::from_map(result.clone()).unwrap();
+            //json.save_to_file("test.json").unwrap();
 
             // println!("{:#?}", worker.clone());
             let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
 
-            let job = Job::<Data, String>::from_json(&queue, contents, "172")
+            let job = Job::<Data, String>::from_json(&queue, contents, "254")
                 .await
                 .unwrap();
-            //println!("{:#?}", job);
+             //println!(" job : {job:#?}",);
             assert_eq!(job.name, "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP");
         });
     }
