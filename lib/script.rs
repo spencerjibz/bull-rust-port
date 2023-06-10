@@ -425,11 +425,11 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
-    async fn move_stalled_job_to_wait<R: FromRedisValue>(
+    async fn move_stalled_jobs_to_wait(
         &mut self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<R> {
+    ) -> anyhow::Result<Vec<Vec<String>>> {
         let stalled = self.keys.get("").unwrap();
         let timestamp = self.generate_timestamp()?;
         let keys = self.get_keys(&[
@@ -442,7 +442,7 @@ impl<'s> Scripts<'s> {
             "events",
         ]);
 
-        let result: R = self
+        let result = self
             .commands
             .get("moveStalledJobToWait")
             .unwrap()
