@@ -167,7 +167,6 @@ impl<'c> Queue<'c> {
     }
 }
 
-// implement fmt::Debug for Queue
 use std::fmt;
 impl fmt::Debug for Queue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

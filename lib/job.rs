@@ -5,6 +5,7 @@ use redis::Commands;
 use serde_json::Value;
 
 pub struct Job<'a, D, R> {
+    
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
     pub timestamp: i64,
