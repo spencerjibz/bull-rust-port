@@ -88,6 +88,27 @@ impl RedisConnectionTrait for RedisConnection<'_> {
     }
 }
 
+#[async_trait]
+impl RedisConnectionTrait for Pool {
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        let mut conn = self.get().await?;
+        let _ = redis::cmd("CLIENT")
+            .arg("KILL")
+            .arg("TYPE")
+            .arg("normal")
+            .query_async::<_, ()>(&mut conn)
+            .await?;
+
+        Ok(())
+    }
+    async fn close(&self) -> anyhow::Result<()> {
+        let mut conn = self.get().await?;
+        let _ = redis::cmd("SHUTDOWN")
+            .query_async::<_, ()>(&mut conn)
+            .await?;
+        Ok(())
+    }
+}
 //impl Default for RedisOpts<'_>
 impl default::Default for RedisOpts<'_> {
     fn default() -> Self {
