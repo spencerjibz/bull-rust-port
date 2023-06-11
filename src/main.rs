@@ -34,22 +34,22 @@ async fn main() -> anyhow::Result<()> {
     let value: WorkerOptions = con.get("worker").await?;
 
     let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:202").await?;
-    
-  if result.is_empty() {
+
+    if result.is_empty() {
         println!("No data found");
     } else {
         println!("Data found");
-    
-    //json.save_to_file("test.json")?;
-    let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None }).await?;
-    // println!("{:#?}", worker.clone());
-    // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
-    let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
-    
-    let job = Job::<Data, Option<String>>::from_json(&queue, contents, "202").await?;
-     println!("{:#?}", job);
-    // println!(" {value:#?}");
-    println!("{:?}", n.elapsed());
+
+        //json.save_to_file("test.json")?;
+        let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None }).await?;
+        // println!("{:#?}", worker.clone());
+        // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
+        let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
+
+        let job = Job::<Data, Option<String>>::from_json(&queue, contents, "202").await?;
+        println!("{:#?}", job);
+        // println!(" {value:#?}");
+        println!("{:?}", n.elapsed());
     }
     Ok(())
 }
