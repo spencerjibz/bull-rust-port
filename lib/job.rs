@@ -59,7 +59,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync, R: Deserial
             delay: opts.delay,
             attempts_made: 0,
             attempts: opts.attempts,
-            data: data.clone(),
+            data,
             return_value: None,
             remove_on_complete: opts.remove_on_complete,
             processed_on: 0,

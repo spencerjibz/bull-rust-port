@@ -187,7 +187,7 @@ impl<'s> Scripts<'s> {
     }
     pub async fn obliterate(&mut self, count: i64, force: bool) -> anyhow::Result<i64> {
         let count = if count > 0 { count } else { 1000 };
-        let mut Connection = self.connection.get().await?;
+        let mut connection = self.connection.get().await?;
         let keys = self.get_keys(&["meta", ""]);
         let result = self
             .commands
@@ -195,7 +195,7 @@ impl<'s> Scripts<'s> {
             .unwrap()
             .key(keys)
             .arg(count)
-            .invoke_async(&mut Connection)
+            .invoke_async(&mut connection)
             .await?;
 
         if result == -1 {
@@ -294,7 +294,7 @@ impl<'s> Scripts<'s> {
         let fetch = if fetch_next { "fetch" } else { "" };
         let d = &self.to_key("");
         let sec_last = self.keys.get("").unwrap_or(d);
-         let mut Connection = &mut self.connection.get().await?;
+         let mut connection = &mut self.connection.get().await?;
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let result: Option<R> = self
             .commands
@@ -310,7 +310,7 @@ impl<'s> Scripts<'s> {
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
-            .invoke_async(Connection)
+            .invoke_async(connection)
             .await?;
         use std::any::{Any, TypeId};
         if let Some(res) = result {
