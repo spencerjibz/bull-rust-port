@@ -43,7 +43,7 @@ impl<'a, D: Send + Sync + Clone + 'a, R: Send + Sync + Clone + 'a> Worker<'a, D,
         let connection = RedisConnection::init(redis_opts).await.unwrap();
         let scripts = script::Scripts::new(to_static_str(prefix), name, connection.pool.clone());
 
-        let mut worker = Self {
+        Self {
             name,
             processing: HashSet::new(),
             jobs: HashSet::new(),
@@ -59,9 +59,7 @@ impl<'a, D: Send + Sync + Clone + 'a, R: Send + Sync + Clone + 'a> Worker<'a, D,
             closing: false,
             scripts: Arc::new(Mutex::new(scripts)),
             stalled_check_timer: None,
-        };
-
-        worker
+        }
     }
 
     async fn run(&'static mut self) -> anyhow::Result<()> {
