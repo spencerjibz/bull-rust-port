@@ -1,11 +1,11 @@
 use crate::emitter::AsyncEventEmitter;
 use crate::timer::Timer;
 use crate::*;
-use futures::future::{BoxFuture, Future, FutureExt, ok};
+use futures::future::{ok, BoxFuture, Future, FutureExt};
 use std::collections::HashSet;
 pub type WorkerCallback<'a, D, R> = dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync);
-use std::sync::Arc;
 use std::cell::RefCell;
+use std::sync::Arc;
 struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
@@ -15,7 +15,7 @@ struct Worker<'a, D, R> {
     pub closing: bool,
     pub closed: bool,
     running: bool,
-     scripts: RefCell<script::Scripts<'a>>,
+    scripts: RefCell<script::Scripts<'a>>,
     pub jobs: HashSet<Job<'a, D, R>>,
     pub processing: HashSet<Job<'a, D, R>>,
     pub prefix: String,
@@ -34,16 +34,16 @@ impl<'a, D, R> Worker<'a, D, R> {
         let redis_opts = RedisOpts::from_conn_str(con_string);
         let prefix = opts.clone().prefix;
         let connection = RedisConnection::init(redis_opts).await.unwrap();
-        let scripts = script::Scripts::new( to_static_str(prefix), name, connection.conn);
-         
-         let worker = Self {
+        let scripts = script::Scripts::new(to_static_str(prefix), name, connection.conn);
+
+        let worker = Self {
             name,
             processing: HashSet::new(),
             jobs: HashSet::new(),
             connection: connection.pool,
             options: opts.clone(),
             emitter,
-            prefix:opts.clone().prefix,
+            prefix: opts.clone().prefix,
             timer: None,
             force_closing: false,
             processor: Arc::new(processor),
@@ -53,23 +53,42 @@ impl<'a, D, R> Worker<'a, D, R> {
             scripts: RefCell::new(scripts),
         };
 
-          if opts.autorun {
+        if opts.autorun {
             worker.run().await;
-          }
+        }
         worker
     }
 
-     async fn run (&self)  -> anyhow::Result<()> {
-         if self.running {
-             return Err(anyhow::anyhow!("Worker is already running"))
-         }
+    async fn run(&self) -> anyhow::Result<()> {
+        if self.running {
+            return Err(anyhow::anyhow!("Worker is already running"));
+        }
 
-         
-         Ok(())
-     }
+        Ok(())
+    }
 
-      async fn run_stalled_jobs(&self) -> anyhow::Result<()> {
-         
-          Ok(())
-      }
+    async fn run_stalled_jobs(&mut self) -> anyhow::Result<()> {
+        let mut scripts = self.scripts.borrow_mut();
+        let mut connection = self.connection.get().await?;
+
+        let mut result = scripts
+            .move_stalled_jobs_to_wait(
+                self.options.max_stalled_count,
+                self.options.stalled_interval,
+            )
+            .await?;
+        if let [Some(failed), Some(stalled)] = [result.get(0), result.get(1)] {
+            for job_id in failed {
+                self.emitter.emit("failed", job_id.to_string()).await;
+            }
+            for job_id in stalled {
+                self.emitter.emit("stalled", job_id.to_string()).await;
+            }
+
+            return Ok(());
+        }
+        let e = anyhow::anyhow!("Error checking stalled jobs");
+        self.emitter.emit("error", e.to_string()).await;
+        Err(e)
+    }
 }
