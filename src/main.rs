@@ -34,7 +34,12 @@ async fn main() -> anyhow::Result<()> {
     let value: WorkerOptions = con.get("worker").await?;
 
     let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:202").await?;
-
+    
+  if result.is_empty() {
+        println!("No data found");
+    } else {
+        println!("Data found");
+    
     //json.save_to_file("test.json")?;
     let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None }).await?;
     // println!("{:#?}", worker.clone());
@@ -45,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
      println!("{:#?}", job);
     // println!(" {value:#?}");
     println!("{:?}", n.elapsed());
+    }
     Ok(())
 }
 
