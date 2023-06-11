@@ -3,23 +3,27 @@ use crate::timer::Timer;
 use crate::*;
 use anyhow::Ok;
 use futures::future::{ok, BoxFuture, Future, FutureExt};
+use std::borrow::BorrowMut;
 use std::collections::HashSet;
-pub type WorkerCallback<'a, D, R> = dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync) + Send + Sync + 'a;
+pub type WorkerCallback<'a, D, R> =
+    dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync) + Send + Sync + 'static;
+use futures::lock::Mutex;
 use std::cell::RefCell;
-use  futures::lock::Mutex;
 use std::sync::Arc;
 
+#[derive(Clone)]
 struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
     pub options: WorkerOptions,
-    pub emitter: AsyncEventEmitter,
+    pub emitter: Arc<Mutex<AsyncEventEmitter>>,
     pub timer: Option<Timer>,
+    pub stalled_check_timer: Option<Timer>,
     pub closing: bool,
     pub closed: bool,
     running: bool,
-    scripts: Mutex<script::Scripts<'a>>,
-    pub jobs: HashSet<Job<'a, D, R>>,
+    scripts: Arc<Mutex<script::Scripts<'a>>>,
+    pub jobs: HashSet<(Job<'a, D, R>, &'a str)>,
     pub processing: HashSet<Job<'a, D, R>>,
     pub prefix: String,
     force_closing: bool,
@@ -27,7 +31,7 @@ struct Worker<'a, D, R> {
 }
 
 // impl     Worker<'a, D, R>
-impl<'a, D: Send + Sync + Clone, R:Send + Sync + Clone> Worker<'a, D, R> {
+impl<'a, D: Send + Sync + Clone + 'a, R: Send + Sync + Clone + 'a> Worker<'a, D, R> {
     pub async fn new<F>(name: &'a str, processor: F, opts: WorkerOptions) -> Worker<'a, D, R>
     where
         F: Fn(D) -> (dyn Future<Output = R> + Send + Sync) + 'static + Send + Sync,
@@ -39,13 +43,13 @@ impl<'a, D: Send + Sync + Clone, R:Send + Sync + Clone> Worker<'a, D, R> {
         let connection = RedisConnection::init(redis_opts).await.unwrap();
         let scripts = script::Scripts::new(to_static_str(prefix), name, connection.pool.clone());
 
-        let mut  worker = Self {
+        let mut worker = Self {
             name,
             processing: HashSet::new(),
             jobs: HashSet::new(),
             connection: connection.pool,
             options: opts.clone(),
-            emitter,
+            emitter: Arc::new(Mutex::new(emitter)),
             prefix: opts.clone().prefix,
             timer: None,
             force_closing: false,
@@ -53,20 +57,30 @@ impl<'a, D: Send + Sync + Clone, R:Send + Sync + Clone> Worker<'a, D, R> {
             running: false,
             closed: false,
             closing: false,
-            scripts: Mutex::new(scripts),
+            scripts: Arc::new(Mutex::new(scripts)),
+            stalled_check_timer: None,
         };
 
-        if opts.autorun {
-            worker.run().await;
-        }
         worker
     }
 
-    async fn run(&mut self) -> anyhow::Result<()> {
+    async fn run(&'static mut self) -> anyhow::Result<()> {
         if self.running {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
-         
+
+        let copy = Arc::new(Mutex::new(self.clone()));
+        let timer = Timer::new(self.options.lock_duration as u64 / 2, move || {
+            let mut worker = copy.clone();
+            async move {
+                worker.lock().await.extend_locks().await;
+            }
+            .boxed()
+        });
+
+        self.running = true;
+
+        self.timer = Some(timer);
         Ok(())
     }
 
@@ -82,23 +96,35 @@ impl<'a, D: Send + Sync + Clone, R:Send + Sync + Clone> Worker<'a, D, R> {
             .await?;
         if let [Some(failed), Some(stalled)] = [result.get(0), result.get(1)] {
             for job_id in failed {
-                self.emitter.emit("failed", job_id.to_string()).await;
+                self.emitter
+                    .lock()
+                    .await
+                    .emit("failed", job_id.to_string())
+                    .await;
             }
             for job_id in stalled {
-                self.emitter.emit("stalled", job_id.to_string()).await;
+                self.emitter
+                    .lock()
+                    .await
+                    .emit("stalled", job_id.to_string())
+                    .await;
             }
 
             return Ok(());
         }
         let e = anyhow::anyhow!("Error checking stalled jobs");
-        self.emitter.emit("error", e.to_string()).await;
+        self.emitter.lock().await.emit("error", e.to_string()).await;
         Err(e)
     }
 
-    pub async fn extend_lock(&mut self) -> anyhow::Result<()> {
-       let jobs = self.jobs.clone();
-        for job in jobs {
-
+    pub async fn extend_locks(&mut self) -> anyhow::Result<()> {
+        let jobs = self.jobs.clone();
+        let mut scripts = self.scripts.lock().await;
+        let mut connection = self.connection.get().await?;
+        for (job, token) in jobs {
+            scripts
+                .extend_lock(&job.id, token, self.options.lock_duration)
+                .await?;
         }
 
         Ok(())

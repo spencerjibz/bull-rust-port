@@ -10,10 +10,11 @@ use tokio::{
 };
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 
+#[derive(Clone)]
 pub struct Timer {
     interval: Duration,
     callback: Arc<EmptyCb>,
-    task: Option<JoinHandle<()>>,
+    task: Option<Arc<JoinHandle<()>>>,
     _ok: bool,
 }
 
@@ -44,7 +45,7 @@ impl Timer {
                 callback().await;
             }
         });
-        self.task = Some(task);
+        self.task = Some(Arc::new(task));
     }
 
     pub fn stop(&mut self) {
