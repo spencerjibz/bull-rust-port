@@ -4,6 +4,8 @@ use super::*;
 use redis::Commands;
 use serde_json::Value;
  use futures::{self, lock::Mutex};
+ use std::sync::Arc;
+ #[derive(Clone)]
 pub struct Job<'a, D, R> {
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
@@ -16,7 +18,7 @@ pub struct Job<'a, D, R> {
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: Mutex<script::Scripts<'a>>,
+    scripts: Arc<Mutex<script::Scripts<'a>>>,
     pub repeat_job_key: Option<&'a str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<&'a str>,
@@ -44,7 +46,8 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync, R: Deserial
     ) -> anyhow::Result<Job<'a, D, R>> {
         let prefix = queue.prefix;
         let queue_name = queue.name;
-        let dup_conn = queue.manager.pool.get().await?;
+        let dup_conn = queue.manager.pool.clone();
+        let conn_str = queue.manager.to_conn_string();
 
         Ok(Self {
             opts: opts.clone(),
@@ -65,7 +68,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync, R: Deserial
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: Mutex::new(script::Scripts::<'a>::new(prefix, queue_name, dup_conn)),
+            scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
         })
     }
 

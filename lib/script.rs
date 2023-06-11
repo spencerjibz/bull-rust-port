@@ -14,13 +14,14 @@ use std::{collections::HashMap, time};
 pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
 use crate::enums::ErrorCode::{self, *};
 use std::any::{self, Any};
-
+use crate::redis_connection::*;
+#[derive(Clone)]
 pub struct Scripts<'s> {
     pub prefix: &'s str,
     pub queue_name: &'s str,
     pub keys: HashMap<&'s str, String>,
     pub commands: ScriptCommands<'s>,
-    pub connection: Connection,
+    pub connection: Pool,
 }
 
 // debug implementation for Scripts
@@ -36,7 +37,7 @@ impl<'s> std::fmt::Debug for Scripts<'s> {
 }
 
 impl<'s> Scripts<'s> {
-    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Connection) -> Self {
+    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Pool) -> Self {
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",
@@ -76,6 +77,7 @@ impl<'s> Scripts<'s> {
             keys,
             commands: comands,
             connection: conn,
+            
         }
     }
     fn to_key(&self, name: &'s str) -> String {
@@ -119,7 +121,7 @@ impl<'s> Scripts<'s> {
         ]);
         let mut packed_json = Vec::new();
         encode::write_bin(&mut packed_json, json_data.as_bytes())?;
-
+       let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("addJob")
@@ -128,7 +130,7 @@ impl<'s> Scripts<'s> {
             .arg(packed_args)
             .arg(json_data)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
@@ -141,13 +143,14 @@ impl<'s> Scripts<'s> {
         } else {
             "resumed".as_bytes()
         };
+        let mut  conn = self.connection.get().await?;
         let result = self
             .commands
             .get("pause")
             .unwrap()
             .key(keys)
             .arg(f_ags)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
@@ -169,6 +172,7 @@ impl<'s> Scripts<'s> {
             (timestamp * 1000)
         };
         let keys = self.get_keys(&["", &current, "wait", "paused", "meta"]);
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("retry_jobs")
@@ -177,13 +181,13 @@ impl<'s> Scripts<'s> {
             .arg(count)
             .arg(timestamp)
             .arg(current)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
     pub async fn obliterate(&mut self, count: i64, force: bool) -> anyhow::Result<i64> {
         let count = if count > 0 { count } else { 1000 };
-
+        let mut Connection = self.connection.get().await?;
         let keys = self.get_keys(&["meta", ""]);
         let result = self
             .commands
@@ -191,7 +195,7 @@ impl<'s> Scripts<'s> {
             .unwrap()
             .key(keys)
             .arg(count)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut Connection)
             .await?;
 
         if result == -1 {
@@ -227,7 +231,7 @@ impl<'s> Scripts<'s> {
         let d = &self.to_key("");
         let first_arg = self.keys.get("").unwrap_or(d);
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-
+         let mut conn = &mut self.connection.get().await?;
         let result: R = self
             .commands
             .get("moveToActive")
@@ -237,7 +241,7 @@ impl<'s> Scripts<'s> {
             .arg(timestamp)
             .arg(id)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
 
         Ok(result)
@@ -290,6 +294,7 @@ impl<'s> Scripts<'s> {
         let fetch = if fetch_next { "fetch" } else { "" };
         let d = &self.to_key("");
         let sec_last = self.keys.get("").unwrap_or(d);
+         let mut Connection = &mut self.connection.get().await?;
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let result: Option<R> = self
             .commands
@@ -305,7 +310,7 @@ impl<'s> Scripts<'s> {
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(Connection)
             .await?;
         use std::any::{Any, TypeId};
         if let Some(res) = result {
@@ -413,6 +418,7 @@ impl<'s> Scripts<'s> {
     ) -> anyhow::Result<u64> {
         let stalled = self.keys.get("stalled").unwrap();
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
+        let conn  = &mut self.connection.get().await?;
         let result: u64 = self
             .commands
             .get("extendLock")
@@ -421,7 +427,7 @@ impl<'s> Scripts<'s> {
             .arg(token)
             .arg(duration.to_string())
             .arg(job_id)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
     }
@@ -441,6 +447,7 @@ impl<'s> Scripts<'s> {
             "meta",
             "events",
         ]);
+        let conn = &mut self.connection.get().await?;
 
         let result = self
             .commands
@@ -451,7 +458,7 @@ impl<'s> Scripts<'s> {
             .arg(stalled)
             .arg(timestamp)
             .arg(stalled_interval)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
     }
@@ -466,6 +473,7 @@ impl<'s> Scripts<'s> {
         ];
 
         let progress = serde_json::to_string(&progress)?;
+        let conn = &mut self.connection.get().await?;
         let result: Option<i8> = self
             .commands
             .get("updateProgress")
@@ -473,7 +481,7 @@ impl<'s> Scripts<'s> {
             .key(&keys)
             .arg(job_id)
             .arg(progress)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
 
         match result {
@@ -538,7 +546,7 @@ impl<'s> Scripts<'s> {
 
     pub async fn get_counts(&mut self, mut types: impl Iterator<Item = &str>) -> Result<Vec<i64>> {
         let keys = self.get_keys(&[""]);
-
+        let conn = &mut self.connection.get().await?;
         let transformed_types: Vec<_> = types
             .map(|t| if t == "waiting" { "wait" } else { t })
             .collect();
@@ -548,11 +556,13 @@ impl<'s> Scripts<'s> {
             .unwrap()
             .key(keys)
             .arg(transformed_types)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
     }
 }
+
+
 
 pub fn print_type_of<T>(_: &T) -> String {
     std::any::type_name::<T>().to_string()

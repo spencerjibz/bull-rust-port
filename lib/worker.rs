@@ -1,6 +1,7 @@
 use crate::emitter::AsyncEventEmitter;
 use crate::timer::Timer;
 use crate::*;
+use anyhow::Ok;
 use futures::future::{ok, BoxFuture, Future, FutureExt};
 use std::collections::HashSet;
 pub type WorkerCallback<'a, D, R> = dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync) + Send + Sync + 'a;
@@ -26,7 +27,7 @@ struct Worker<'a, D, R> {
 }
 
 // impl     Worker<'a, D, R>
-impl<'a, D: Send + Sync, R:Send + Sync> Worker<'a, D, R> {
+impl<'a, D: Send + Sync + Clone, R:Send + Sync + Clone> Worker<'a, D, R> {
     pub async fn new<F>(name: &'a str, processor: F, opts: WorkerOptions) -> Worker<'a, D, R>
     where
         F: Fn(D) -> (dyn Future<Output = R> + Send + Sync) + 'static + Send + Sync,
@@ -36,7 +37,7 @@ impl<'a, D: Send + Sync, R:Send + Sync> Worker<'a, D, R> {
         let redis_opts = RedisOpts::from_conn_str(con_string);
         let prefix = opts.clone().prefix;
         let connection = RedisConnection::init(redis_opts).await.unwrap();
-        let scripts = script::Scripts::new(to_static_str(prefix), name, connection.conn);
+        let scripts = script::Scripts::new(to_static_str(prefix), name, connection.pool.clone());
 
         let mut  worker = Self {
             name,
@@ -92,5 +93,14 @@ impl<'a, D: Send + Sync, R:Send + Sync> Worker<'a, D, R> {
         let e = anyhow::anyhow!("Error checking stalled jobs");
         self.emitter.emit("error", e.to_string()).await;
         Err(e)
+    }
+
+    pub async fn extend_lock(&mut self) -> anyhow::Result<()> {
+       let jobs = self.jobs.clone();
+        for job in jobs {
+
+        }
+
+        Ok(())
     }
 }

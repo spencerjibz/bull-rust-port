@@ -34,8 +34,9 @@ impl<'c> Queue<'c> {
 
         let new_connection = RedisConnection::init(redis_opts.clone()).await?;
         let last_connection = RedisConnection::init(redis_opts.clone()).await?;
-        let connection = RedisConnection::init(redis_opts).await?;
-        let scripts = script::Scripts::new(prefix, name, connection.conn);
+        let connection = RedisConnection::init(redis_opts.clone()).await?;
+        let conn_str = redis_opts.to_conn_string();
+        let scripts = script::Scripts::new(prefix, name, connection.pool);
 
         Ok(Self {
             prefix,
