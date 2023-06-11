@@ -1,5 +1,5 @@
 use crate::*;
-use bincode;
+use bincode::{self, de};
 use std::{collections::HashMap, sync::Arc};
 use tokio::task::{self, JoinHandle};
 
@@ -7,13 +7,15 @@ use futures::future::{BoxFuture, Future, FutureExt};
 use uuid::Uuid;
 
 pub type AsyncCB = dyn Fn(Vec<u8>) -> BoxFuture<'static, ()> + Send + Sync + 'static;
+
+#[derive(Clone)]
 pub struct AsyncListener {
     callback: Arc<AsyncCB>,
     limit: Option<u64>,
     id: String,
 }
 
-#[derive(Default)]
+#[derive(Default,Clone)]
 pub struct AsyncEventEmitter {
     pub listeners: HashMap<String, Vec<AsyncListener>>,
 }

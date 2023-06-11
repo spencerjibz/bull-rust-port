@@ -16,7 +16,7 @@ struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
     pub options: WorkerOptions,
-    pub emitter: Arc<Mutex<AsyncEventEmitter>>,
+    pub emitter: AsyncEventEmitter,
     pub timer: Option<Timer>,
     pub stalled_check_timer: Option<Timer>,
     pub closing: bool,
@@ -49,7 +49,7 @@ impl<'a, D: Send + Sync + Clone + 'a, R: Send + Sync + Clone + 'a> Worker<'a, D,
             jobs: HashSet::new(),
             connection: connection.pool,
             options: opts.clone(),
-            emitter: Arc::new(Mutex::new(emitter)),
+            emitter,
             prefix: opts.clone().prefix,
             timer: None,
             force_closing: false,
@@ -94,24 +94,16 @@ impl<'a, D: Send + Sync + Clone + 'a, R: Send + Sync + Clone + 'a> Worker<'a, D,
             .await?;
         if let [Some(failed), Some(stalled)] = [result.get(0), result.get(1)] {
             for job_id in failed {
-                self.emitter
-                    .lock()
-                    .await
-                    .emit("failed", job_id.to_string())
-                    .await;
+                self.emitter.emit("failed", job_id.to_string()).await;
             }
             for job_id in stalled {
-                self.emitter
-                    .lock()
-                    .await
-                    .emit("stalled", job_id.to_string())
-                    .await;
+                self.emitter.emit("stalled", job_id.to_string()).await;
             }
 
             return Ok(());
         }
         let e = anyhow::anyhow!("Error checking stalled jobs");
-        self.emitter.lock().await.emit("error", e.to_string()).await;
+        self.emitter.emit("error", e.to_string()).await;
         Err(e)
     }
 
