@@ -3,7 +3,7 @@ use crate::timer::Timer;
 use crate::*;
 use anyhow::Ok;
 use futures::future::{ok, BoxFuture, Future, FutureExt};
-use std::borrow::BorrowMut;
+
 use std::collections::HashSet;
 pub type WorkerCallback<'a, D, R> =
     dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync) + Send + Sync + 'static;
@@ -22,7 +22,7 @@ struct Worker<'a, D, R> {
     pub closing: bool,
     pub closed: bool,
     running: bool,
-    scripts: Arc<Mutex<script::Scripts<'a>>>,
+    scripts: Arc<Mutex<Scripts<'a>>>,
     pub jobs: HashSet<(Job<'a, D, R>, &'a str)>,
     pub processing: HashSet<Job<'a, D, R>>,
     pub prefix: String,
