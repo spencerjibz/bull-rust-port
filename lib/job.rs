@@ -5,7 +5,6 @@ use redis::Commands;
 use serde_json::Value;
 
 pub struct Job<'a, D, R> {
-    
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
     pub timestamp: i64,
@@ -243,7 +242,7 @@ mod tests {
             let job = Job::<Data, String>::from_json(&queue, contents, "254")
                 .await
                 .unwrap();
-             //println!(" job : {job:#?}",);
+            //println!(" job : {job:#?}",);
             assert_eq!(job.name, "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP");
         });
     }

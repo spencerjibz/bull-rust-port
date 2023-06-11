@@ -1,7 +1,7 @@
 use crate::job::Job;
+use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
 use crate::redis_connection::{Client, RedisConnection, RedisOpts};
 use crate::script;
-use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
 use anyhow::Ok;
 use deadpool_redis::{Connection, Pool, Runtime};
 use futures::future::ok;
@@ -178,4 +178,3 @@ impl fmt::Debug for Queue<'_> {
             .finish()
     }
 }
-

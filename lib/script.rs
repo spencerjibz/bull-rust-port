@@ -425,7 +425,7 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
-    async fn move_stalled_jobs_to_wait(
+    pub async fn move_stalled_jobs_to_wait(
         &mut self,
         max_stalled_count: i64,
         stalled_interval: i64,
@@ -552,18 +552,11 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
-
-     
-    
 }
-
-
 
 pub fn print_type_of<T>(_: &T) -> String {
     std::any::type_name::<T>().to_string()
 }
-
-
 
 type Map = HashMap<String, String>;
 type NextJobData = Option<(Option<Map>, Option<Map>)>;

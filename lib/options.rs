@@ -1,13 +1,13 @@
 // Specify which jobs to keep after finishing. If both age and count are
 //  specified, then the jobs kept will be the ones that satisfies both
 // properties.
+use crate::redis_connection::RedisOpts;
+use crate::to_static_str;
 pub use derive_redis_json::RedisJsonValue;
 use rand::prelude::*;
 use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
 pub use serde::{Deserialize, Serialize};
 use std::{borrow::Borrow, collections::HashMap, default, fmt::Display};
-use crate::redis_connection::RedisOpts;
-use crate::to_static_str;
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
 pub struct KeepJobs {
@@ -59,7 +59,7 @@ pub struct RetryJobOptions {
     pub count: i64,
     pub timestamp: i64,
 }
-#[derive(Debug, Serialize, Deserialize, RedisJsonValue,Clone)]
+#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
     pub concurrency: i64, // number of parallel jobs per worker, default: 1
@@ -68,18 +68,18 @@ pub struct WorkerOptions {
     pub lock_duration: i64, // Duration of lock for job in milliseconds, default: 30000
     pub prefix: String, // prefix for all queue, keys
     pub connection: String, // redis connection string
-    pub limiter: Limiter,               //
+    pub limiter: Limiter, //
     pub metrics: Option<MetricOptions>, // metrics options
     pub remove_on_completion: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue,Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct Limiter {
     max: i64,
     duration: i64,
 }
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue,Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct MetricOptions {
     pub max_data_points: String,
 }

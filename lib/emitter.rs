@@ -83,7 +83,7 @@ impl AsyncEventEmitter {
 
     pub async fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug ,
+        for<'de> T: Deserialize<'de> + std::fmt::Debug,
         F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
         let id = Uuid::new_v4().to_string();
@@ -155,7 +155,7 @@ mod tests {
     use bincode::{options, DefaultOptions};
     use tokio::test;
 
-  #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug)]
     struct Date {
         month: String,
         day: String,
@@ -168,9 +168,8 @@ mod tests {
     #[derive(Serialize, Deserialize, Debug)]
     struct DateTime(Date, Time);
 
-
     #[tokio::test]
-  
+
     async fn test_async_event() {
         let mut event_emitter = AsyncEventEmitter::new();
 
@@ -189,36 +188,30 @@ mod tests {
                 async move { println!(" emitted data: {:#?}", date) }.boxed()
             })
             .await;
-        event_emitter
-            .emit(
-                "LOG_DATE",
-                date,
-            )
-            .await;
-          println!("{:#?}", event_emitter);
-         assert!(event_emitter.listeners.get("LOG_DATE").is_some());
+        event_emitter.emit("LOG_DATE", date).await;
+        println!("{:#?}", event_emitter);
+        assert!(event_emitter.listeners.get("LOG_DATE").is_some());
     }
 
-   
     #[tokio::test]
     async fn test_emit_multiple_args() {
         let mut event_emitter = AsyncEventEmitter::new();
         let name = "LOG_DATE".to_string();
         event_emitter
-            .on("LOG_DATE", |tup: (Date,String)| {
+            .on("LOG_DATE", |tup: (Date, String)| {
                 async move { println!("{:#?}", tup) }.boxed()
             })
             .await;
-       
+
         event_emitter
             .emit(
                 "LOG_DATE",
-                 (
+                (
                     Date {
                         month: "January".to_string(),
                         day: "Tuesday".to_string(),
                     },
-                    name
+                    name,
                 ),
             )
             .await;
@@ -239,15 +232,15 @@ mod tests {
             },
         );
         let encoded: Vec<u8> = bincode::serialize(&example).unwrap();
-        let decoded: (Date,Time)= bincode::deserialize(&encoded).unwrap();
+        let decoded: (Date, Time) = bincode::deserialize(&encoded).unwrap();
         #[derive(Serialize, Deserialize, Debug)]
-         struct DateTimeContainer {
-            data: RefCell<DateTime>
-         }
-        
-         let mut container = DateTimeContainer {
-             data: RefCell::new(example)
-         };
+        struct DateTimeContainer {
+            data: RefCell<DateTime>,
+        }
+
+        let mut container = DateTimeContainer {
+            data: RefCell::new(example),
+        };
 
         println!("{:#?}", container.data);
     }
