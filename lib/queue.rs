@@ -13,14 +13,14 @@ use crate::RedisConnectionTrait;
 use redis::streams::StreamMaxlen;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use futures::lock::Mutex;
 
 pub struct Queue<'c> {
     pub prefix: &'c str,
     pub name: &'c str,
     pub client: Connection,
     pub opts: QueueOptions<'c>,
-    pub scripts: RefCell<script::Scripts<'c>>,
+    pub scripts: Mutex<script::Scripts<'c>>,
     pub manager: RedisConnection<'c>,
 }
 
@@ -41,7 +41,7 @@ impl<'c> Queue<'c> {
             prefix,
             name,
             opts: queue_opts,
-            scripts: RefCell::new(scripts),
+            scripts: Mutex::new(scripts),
             client: new_connection.conn,
             manager: last_connection,
         })
@@ -56,7 +56,8 @@ impl<'c> Queue<'c> {
         opts: JobOptions,
     ) -> anyhow::Result<Job<D, R>> {
         let mut job = Job::<D, R>::new(name, self, data, opts).await?;
-        let job_id = self.scripts.borrow_mut().add_job(&job).await?;
+        let mut scripts = self.scripts.lock().await;
+        let job_id =scripts.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
 
         Ok(job)
@@ -65,12 +66,13 @@ impl<'c> Queue<'c> {
     pub async fn pause<R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static>(
         &'c self,
     ) -> anyhow::Result<R> {
-        let result = self.scripts.borrow_mut().pause(true).await?;
+        let result = self.scripts.lock().await.pause(true).await?;
+        
 
         Ok(result)
     }
     pub async fn resume<R: FromRedisValue>(&'c self) -> anyhow::Result<R> {
-        let result = self.scripts.borrow_mut().pause(false).await?;
+        let result = self.scripts.lock().await.pause(false).await?;
 
         Ok(result)
     }
@@ -86,7 +88,7 @@ impl<'c> Queue<'c> {
     async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
         self.pause().await?;
         loop {
-            let cursor = self.scripts.borrow_mut().obliterate(1000, force).await?;
+            let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
             if cursor == 0 {
                 break;
             }
@@ -98,7 +100,7 @@ impl<'c> Queue<'c> {
         loop {
             let cursor = self
                 .scripts
-                .borrow_mut()
+                .lock().await
                 .retry_jobs::<i64>(opts.state.clone(), opts.count, opts.timestamp)
                 .await?;
             if cursor == 0 {
@@ -128,7 +130,7 @@ impl<'c> Queue<'c> {
         let cloned_types = current_types.clone();
         let resources = self
             .scripts
-            .borrow_mut()
+            .lock().await
             .get_counts(cloned_types.into_iter())
             .await?;
 

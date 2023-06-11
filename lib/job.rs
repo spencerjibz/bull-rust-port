@@ -3,7 +3,7 @@ use std::{borrow::Borrow, clone, collections::HashMap};
 use super::*;
 use redis::Commands;
 use serde_json::Value;
-
+ use futures::{self, lock::Mutex};
 pub struct Job<'a, D, R> {
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
@@ -16,7 +16,7 @@ pub struct Job<'a, D, R> {
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: script::Scripts<'a>,
+    scripts: Mutex<script::Scripts<'a>>,
     pub repeat_job_key: Option<&'a str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<&'a str>,
@@ -26,12 +26,12 @@ pub struct Job<'a, D, R> {
     pub finished_on: i64,
 }
 
-impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Serialize>
+impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync, R: Deserialize<'a> + Serialize + Send + Sync>
     Job<'a, D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
         self.progress = serde_json::to_string(&progress).unwrap();
-        self.scripts.update_progress(&self.id, progress).await
+        self.scripts.lock().await.update_progress(&self.id, progress).await
 
         // return a script to update the progress;
     }
@@ -65,7 +65,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: script::Scripts::<'a>::new(prefix, queue_name, dup_conn),
+            scripts: Mutex::new(script::Scripts::<'a>::new(prefix, queue_name, dup_conn)),
         })
     }
 

@@ -62,7 +62,7 @@ pub struct RetryJobOptions {
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
-    pub concurrency: i64, // number of parallel jobs per worker, default: 1
+    pub concurrency: u64, // number of parallel jobs per worker, default: 1
     pub max_stalled_count: i64, // n of jobs to be recovered from stalled state, default:1
     pub stalled_interval: i64, // milliseconds between stallness checks, default 30000
     pub lock_duration: i64, // Duration of lock for job in milliseconds, default: 30000

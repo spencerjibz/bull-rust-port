@@ -3,9 +3,11 @@ use crate::timer::Timer;
 use crate::*;
 use futures::future::{ok, BoxFuture, Future, FutureExt};
 use std::collections::HashSet;
-pub type WorkerCallback<'a, D, R> = dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync);
+pub type WorkerCallback<'a, D, R> = dyn Fn(D) -> (dyn Future<Output = R> + Send + Sync) + Send + Sync + 'a;
 use std::cell::RefCell;
+use  futures::lock::Mutex;
 use std::sync::Arc;
+
 struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
@@ -15,7 +17,7 @@ struct Worker<'a, D, R> {
     pub closing: bool,
     pub closed: bool,
     running: bool,
-    scripts: RefCell<script::Scripts<'a>>,
+    scripts: Mutex<script::Scripts<'a>>,
     pub jobs: HashSet<Job<'a, D, R>>,
     pub processing: HashSet<Job<'a, D, R>>,
     pub prefix: String,
@@ -24,10 +26,10 @@ struct Worker<'a, D, R> {
 }
 
 // impl     Worker<'a, D, R>
-impl<'a, D, R> Worker<'a, D, R> {
+impl<'a, D: Send + Sync, R:Send + Sync> Worker<'a, D, R> {
     pub async fn new<F>(name: &'a str, processor: F, opts: WorkerOptions) -> Worker<'a, D, R>
     where
-        F: Fn(D) -> (dyn Future<Output = R> + Send + Sync) + 'static,
+        F: Fn(D) -> (dyn Future<Output = R> + Send + Sync) + 'static + Send + Sync,
     {
         let emitter = AsyncEventEmitter::new();
         let con_string = to_static_str(opts.clone().connection);
@@ -36,7 +38,7 @@ impl<'a, D, R> Worker<'a, D, R> {
         let connection = RedisConnection::init(redis_opts).await.unwrap();
         let scripts = script::Scripts::new(to_static_str(prefix), name, connection.conn);
 
-        let worker = Self {
+        let mut  worker = Self {
             name,
             processing: HashSet::new(),
             jobs: HashSet::new(),
@@ -50,7 +52,7 @@ impl<'a, D, R> Worker<'a, D, R> {
             running: false,
             closed: false,
             closing: false,
-            scripts: RefCell::new(scripts),
+            scripts: Mutex::new(scripts),
         };
 
         if opts.autorun {
@@ -59,16 +61,16 @@ impl<'a, D, R> Worker<'a, D, R> {
         worker
     }
 
-    async fn run(&self) -> anyhow::Result<()> {
+    async fn run(&mut self) -> anyhow::Result<()> {
         if self.running {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
-
+         
         Ok(())
     }
 
     async fn run_stalled_jobs(&mut self) -> anyhow::Result<()> {
-        let mut scripts = self.scripts.borrow_mut();
+        let mut scripts = self.scripts.lock().await;
         let mut connection = self.connection.get().await?;
 
         let mut result = scripts
