@@ -35,7 +35,7 @@ struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
     pub options: WorkerOptions,
-    pub emitter: AsyncEventEmitter,
+     emitter: AsyncEventEmitter,
     pub timer: Option<Timer>,
     pub stalled_check_timer: Option<Timer>,
     pub closing: bool,
@@ -146,7 +146,9 @@ impl<
             return Ok(());
         }
         let e = anyhow::anyhow!("Error checking stalled jobs");
-        self.emitter.emit("error", e.to_string()).await;
+        self.emitter
+            .emit("error", (e.to_string(), String::from("all")))
+            .await;
         Err(e)
     }
 
@@ -206,10 +208,20 @@ impl<
                 } else {
                     let e = res.err().unwrap();
                     self.emitter.emit("error", e.to_string()).await;
+
                     Err(anyhow!("Error processing job"))
                 }
             }
-            Err(e) => Err(anyhow!("Error processing job")),
+            Err(e) => {
+                self.emitter
+                    .emit("error", (e.to_string(), job.name, job.id))
+                    .await;
+
+                  if ! self.force_closing {
+                     //let done = job.move_to_failed(e.to_string(), token, &self.options).await?;
+                  }
+                Err(anyhow!("Error processing job"))
+            }
         }
     }
 }
