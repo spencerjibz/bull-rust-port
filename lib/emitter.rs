@@ -25,9 +25,9 @@ impl AsyncEventEmitter {
         Self::default()
     }
 
-    pub async fn emit<T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
+    pub async fn emit<'a,T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
     where
-        T: Serialize + Deserialize<'static> + Send + Sync + 'static + std::fmt::Debug,
+        T: Serialize + Deserialize<'a> + Send + Sync + 'a + std::fmt::Debug,
     {
         let mut callback_handlers: Vec<_> = Vec::new();
 
