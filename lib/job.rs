@@ -1,11 +1,13 @@
 use std::{borrow::Borrow, clone, collections::HashMap};
 
 use super::*;
+use futures::{self, lock::Mutex};
 use redis::Commands;
+use serde::ser::{Serialize, SerializeStruct, Serializer,};
+use serde::de::{Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
- use futures::{self, lock::Mutex};
- use std::sync::Arc;
- #[derive(Clone)]
+use std::sync::Arc;
+#[derive(Clone)]
 pub struct Job<'a, D, R> {
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
@@ -27,13 +29,63 @@ pub struct Job<'a, D, R> {
     pub processed_on: i64,
     pub finished_on: i64,
 }
+// implement Serialize for Job
+impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Job", 15)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("queue", &self.queue.name)?;
+        state.serialize_field("timestamp", &self.timestamp)?;
+        state.serialize_field("attempts_made", &self.attempts_made)?;
+        state.serialize_field("attempts", &self.attempts)?;
+        state.serialize_field("delay", &self.delay)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("progress", &self.progress)?;
+        state.serialize_field("opts", &self.opts)?;
+        state.serialize_field("data", &self.data)?;
+        state.serialize_field("return_value", &self.return_value)?;
+        state.serialize_field("repeat_job_key", &self.repeat_job_key)?;
+        state.serialize_field("failed_reason", &self.failed_reason)?;
+        state.serialize_field("stack_trace", &self.stack_trace)?;
+        state.serialize_field("remove_on_complete", &self.remove_on_complete)?;
+        state.serialize_field("remove_on_fail", &self.remove_on_fail)?;
+        state.serialize_field("processed_on", &self.processed_on)?;
+        state.serialize_field("finished_on", &self.finished_on)?;
+        state.end()
+    }
+}
 
-impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync, R: Deserialize<'a> + Serialize + Send + Sync>
-    Job<'a, D, R>
+// implement Deserialize for Job
+
+
+//implement PartialEq for Job
+impl<
+        'a,
+        D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'a> + Serialize + Send + Sync,
+    > PartialEq for Job<'a, D, R>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<
+        'a,
+        D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'a> + Serialize + Send + Sync,
+    > Job<'a, D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
         self.progress = serde_json::to_string(&progress).unwrap();
-        self.scripts.lock().await.update_progress(&self.id, progress).await
+        self.scripts
+            .lock()
+            .await
+            .update_progress(&self.id, progress)
+            .await
 
         // return a script to update the progress;
     }
