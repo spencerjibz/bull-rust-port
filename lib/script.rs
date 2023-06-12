@@ -250,8 +250,8 @@ impl<'s> Scripts<'s> {
     #[allow(clippy::too_many_arguments)]
     async fn move_to_finished<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
-        V: Any + ToString + ToRedisArgs,
+        R: FromRedisValue + Any + Send + Sync + Clone + 'static,
+        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
@@ -315,7 +315,7 @@ impl<'s> Scripts<'s> {
         use std::any::{Any, TypeId};
         if let Some(res) = result {
             if TypeId::of::<i8>() == res.type_id() {
-                let n = Box::new(res) as Box<dyn Any>;
+                let n = Box::new(res.clone()) as Box<dyn Any>;
                 let n = n.downcast::<i8>().unwrap();
                 if *n < 0 {
                     self.finished_errors(*n, &job.id, "finished", "active");
@@ -325,8 +325,8 @@ impl<'s> Scripts<'s> {
             job.finished_on = timestamp as i64;
 
             let slice_of_string = print_type_of(&vec![vec![""]]);
-
-            if print_type_of(&res.clone()) == slice_of_string {
+             
+            if print_type_of(&res) == slice_of_string {
                 let n = Box::new(res) as Box<dyn Any>;
                 let n = n.downcast::<Vec<Vec<&str>>>().unwrap();
                 let v = *n;
@@ -494,10 +494,10 @@ impl<'s> Scripts<'s> {
             None => Ok(None),
         }
     }
-    async fn move_to_completed<
+    pub async fn move_to_completed<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
-        V: Any + ToString + ToRedisArgs,
+        R: FromRedisValue + Send + Sync + Clone + 'static,
+        V: Any  + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
