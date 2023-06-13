@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, time};
 pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
 use crate::enums::ErrorCode::{self, *};
-use std::any::{self, Any};
 use crate::redis_connection::*;
+use std::any::{self, Any};
 #[derive(Clone)]
 pub struct Scripts<'s> {
     pub prefix: &'s str,
@@ -77,7 +77,6 @@ impl<'s> Scripts<'s> {
             keys,
             commands: comands,
             connection: conn,
-            
         }
     }
     fn to_key(&self, name: &'s str) -> String {
@@ -87,6 +86,12 @@ impl<'s> Scripts<'s> {
         keys.iter()
             .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
             .collect()
+    }
+    pub fn save_stacktrace_args(&self, job_id: &str, stacktrace: &str, failed_reason: &str) -> (Vec<String>, Vec<String>){
+        let keys = vec![self.to_key(job_id)];
+        let args = vec![stacktrace.to_string(), failed_reason.to_string()];
+
+        (keys, args)
     }
 
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
@@ -121,7 +126,7 @@ impl<'s> Scripts<'s> {
         ]);
         let mut packed_json = Vec::new();
         encode::write_bin(&mut packed_json, json_data.as_bytes())?;
-       let mut conn = self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("addJob")
@@ -143,7 +148,7 @@ impl<'s> Scripts<'s> {
         } else {
             "resumed".as_bytes()
         };
-        let mut  conn = self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("pause")
@@ -231,7 +236,7 @@ impl<'s> Scripts<'s> {
         let d = &self.to_key("");
         let first_arg = self.keys.get("").unwrap_or(d);
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-         let mut conn = &mut self.connection.get().await?;
+        let mut conn = &mut self.connection.get().await?;
         let result: R = self
             .commands
             .get("moveToActive")
@@ -294,7 +299,7 @@ impl<'s> Scripts<'s> {
         let fetch = if fetch_next { "fetch" } else { "" };
         let d = &self.to_key("");
         let sec_last = self.keys.get("").unwrap_or(d);
-         let mut connection = &mut self.connection.get().await?;
+        let mut connection = &mut self.connection.get().await?;
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let result: Option<R> = self
             .commands
@@ -325,7 +330,7 @@ impl<'s> Scripts<'s> {
             job.finished_on = timestamp as i64;
 
             let slice_of_string = print_type_of(&vec![vec![""]]);
-             
+
             if print_type_of(&res) == slice_of_string {
                 let n = Box::new(res) as Box<dyn Any>;
                 let n = n.downcast::<Vec<Vec<&str>>>().unwrap();
@@ -418,7 +423,7 @@ impl<'s> Scripts<'s> {
     ) -> anyhow::Result<u64> {
         let stalled = self.keys.get("stalled").unwrap();
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
-        let conn  = &mut self.connection.get().await?;
+        let conn = &mut self.connection.get().await?;
         let result: u64 = self
             .commands
             .get("extendLock")
@@ -497,7 +502,7 @@ impl<'s> Scripts<'s> {
     pub async fn move_to_completed<
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
-        V: Any  + ToRedisArgs,
+        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
@@ -561,8 +566,6 @@ impl<'s> Scripts<'s> {
         Ok(result)
     }
 }
-
-
 
 pub fn print_type_of<T>(_: &T) -> String {
     std::any::type_name::<T>().to_string()

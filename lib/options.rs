@@ -23,6 +23,7 @@ pub struct JobOptions {
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub fail_parent_on_failure: bool, // if true, moves parent to failed
+    pub stacktrace_limit: Option<usize>
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -49,6 +50,7 @@ impl Default for JobOptions {
             remove_on_complete: RemoveOnCompletionOrFailure::default(),
             remove_on_fail: RemoveOnCompletionOrFailure::default(),
             fail_parent_on_failure: false,
+            stacktrace_limit: None,
         }
     }
 }

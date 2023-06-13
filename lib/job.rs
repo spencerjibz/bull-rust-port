@@ -1,10 +1,11 @@
 use std::{borrow::Borrow, clone, collections::HashMap};
 
 use super::*;
+use anyhow::Ok;
 use futures::{self, lock::Mutex};
 use redis::Commands;
-use serde::ser::{Serialize, SerializeStruct, Serializer,};
 use serde::de::{Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 use std::sync::Arc;
 #[derive(Clone)]
@@ -59,7 +60,6 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
 }
 
 // implement Deserialize for Job
-
 
 //implement PartialEq for Job
 impl<
@@ -182,6 +182,53 @@ impl<
 
         let job = Self::from_json(queue, raw_string, job_id).await?;
         Ok(job)
+    }
+    pub async fn move_to_failed(
+        &mut self,
+        err: String,
+        token: &str,
+        fetch_next: bool,
+    ) -> anyhow::Result<()> {
+        self.failed_reason = Some(err);
+        let mut move_to_failed = false;
+
+        let finished_on = 0;
+        let command = "moveToFailed";
+
+        Ok(())
+    }
+
+    pub async fn save_to_stacktrace(
+        &mut self,
+        conn: &'a mut Connection,
+        err_stack: &'a str,
+    ) -> anyhow::Result<()> {
+        if !err_stack.is_empty() {
+            self.stack_trace.push(err_stack);
+            if let Some(limit) = self.opts.stacktrace_limit {
+                if self.stack_trace.len() > limit {
+                    self.stack_trace = self.stack_trace[0..limit].to_vec();
+                }
+            }
+            let stack_trace = serde_json::to_string(&self.stack_trace)?;
+            let (keys, args) =
+                self.scripts
+                    .lock()
+                    .await
+                    .save_stacktrace_args(&self.id, &stack_trace, err_stack);
+
+            self.scripts
+                .lock()
+                .await
+                .commands
+                .get("saveStacktrace")
+                .unwrap()
+                .key(keys)
+                .arg(args)
+                .invoke_async(conn)
+                .await?;
+        }
+        Ok(())
     }
 }
 
