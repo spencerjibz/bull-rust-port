@@ -24,11 +24,12 @@ pub struct Job<'a, D, R> {
     scripts: Arc<Mutex<script::Scripts<'a>>>,
     pub repeat_job_key: Option<&'a str>,
     pub failed_reason: Option<String>,
-    pub stack_trace: Vec<&'a str>,
+    pub stack_trace: Vec<String>,
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub processed_on: i64,
     pub finished_on: i64,
+    pub discarded: bool,
 }
 // implement Serialize for Job
 impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
@@ -55,6 +56,7 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
         state.serialize_field("remove_on_fail", &self.remove_on_fail)?;
         state.serialize_field("processed_on", &self.processed_on)?;
         state.serialize_field("finished_on", &self.finished_on)?;
+        state.serialize_field("discarded", &self.discarded)?;
         state.end()
     }
 }
@@ -121,6 +123,7 @@ impl<
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
             scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
+            discarded: false,
         })
     }
 
@@ -161,7 +164,12 @@ impl<
         job.failed_reason = Some(json.failed_reason.to_string());
 
         job.repeat_job_key = json.rjk;
-        job.stack_trace = json.stack_trace;
+
+        job.stack_trace = json
+            .stack_trace
+            .into_iter()
+            .map(|x| x.to_string())
+            .collect();
 
         Ok(job)
     }
@@ -189,22 +197,37 @@ impl<
         token: &str,
         fetch_next: bool,
     ) -> anyhow::Result<()> {
-        self.failed_reason = Some(err);
+        self.failed_reason = Some(err.clone());
         let mut move_to_failed = false;
 
         let finished_on = 0;
         let command = "moveToFailed";
+        let mut conn = self.queue.manager.pool.clone().get().await?;
+        self.save_to_stacktrace(&mut conn, err).await?;
+        let backoff_s = BackOff::new();
+
+        if self.attempts_made < self.opts.attempts && !self.discarded {
+            let backoff = BackOff::normalize(self.opts.backoff.clone());
+            let custom_strategy = if let Some(q) = self.queue.opts.settings.backoff_strategy.clone()
+            {
+                Arc::into_inner(q)
+            } else {
+                None
+            };
+
+            let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy)?;
+        }
 
         Ok(())
     }
 
     pub async fn save_to_stacktrace(
         &mut self,
-        conn: &'a mut Connection,
-        err_stack: &'a str,
+        conn: &mut Connection,
+        err_stack: String,
     ) -> anyhow::Result<()> {
         if !err_stack.is_empty() {
-            self.stack_trace.push(err_stack);
+            self.stack_trace.push(err_stack.clone());
             if let Some(limit) = self.opts.stacktrace_limit {
                 if self.stack_trace.len() > limit {
                     self.stack_trace = self.stack_trace[0..limit].to_vec();
@@ -215,7 +238,7 @@ impl<
                 self.scripts
                     .lock()
                     .await
-                    .save_stacktrace_args(&self.id, &stack_trace, err_stack);
+                    .save_stacktrace_args(&self.id, &stack_trace, &err_stack);
 
             self.scripts
                 .lock()
@@ -259,6 +282,7 @@ impl<
             .field("remove_on_fail", &self.remove_on_fail)
             .field("processed_on", &self.processed_on)
             .field("finished_on", &self.finished_on)
+            .field("discarded", &self.discarded)
             .finish()
     }
 }
@@ -305,7 +329,7 @@ mod tests {
 
             let redis_opts = RedisOpts::Config(config);
 
-            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None })
+            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions::default())
                 .await
                 .unwrap();
             let job = Job::<'_, String, String>::new(
@@ -329,7 +353,7 @@ mod tests {
 
             let redis_opts = RedisOpts::Config(config);
 
-            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None })
+            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions::default())
                 .await
                 .unwrap();
 

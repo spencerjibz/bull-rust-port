@@ -3,12 +3,13 @@
 // properties.
 use crate::redis_connection::RedisOpts;
 use crate::to_static_str;
+use crate::BoxedFn;
 pub use derive_redis_json::RedisJsonValue;
 use rand::prelude::*;
 use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
 pub use serde::{Deserialize, Serialize};
 use std::{borrow::Borrow, collections::HashMap, default, fmt::Display};
-
+use std::sync::Arc;
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
 pub struct KeepJobs {
     pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
@@ -23,7 +24,8 @@ pub struct JobOptions {
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub fail_parent_on_failure: bool, // if true, moves parent to failed
-    pub stacktrace_limit: Option<usize>
+    pub stacktrace_limit: Option<usize>,
+    pub backoff: (i64, Option<BackOffOptions>), //
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -51,6 +53,7 @@ impl Default for JobOptions {
             remove_on_fail: RemoveOnCompletionOrFailure::default(),
             fail_parent_on_failure: false,
             stacktrace_limit: None,
+            backoff: (0, None),
         }
     }
 }
@@ -86,6 +89,20 @@ pub struct MetricOptions {
     pub max_data_points: String,
 }
 
+#[derive(Default,Clone)]
+pub struct QueueSettings {
+   pub  backoff_strategy: Option<Arc<BoxedFn>>,
+}
+
+
+//implement fmt::Debug for QueueSettings
+use std::fmt;
+impl fmt::Debug for QueueSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueueSettings").finish()
+    }
+}
+
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
@@ -107,6 +124,7 @@ impl Default for WorkerOptions {
 #[derive(Debug, Default)]
 pub struct QueueOptions<'d> {
     pub prefix: Option<&'d str>,
+    pub settings: QueueSettings,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -184,4 +202,11 @@ impl JobJsonRaw {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BackOffOptions {
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    pub delay: Option<i64>,
 }
