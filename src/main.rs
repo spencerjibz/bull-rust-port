@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         println!("Data found");
 
         //json.save_to_file("test.json")?;
-        let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None }).await?;
+        let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions::default()).await?;
         // println!("{:#?}", worker.clone());
         // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
         let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
