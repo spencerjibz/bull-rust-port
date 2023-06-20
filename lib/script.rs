@@ -87,25 +87,34 @@ impl<'s> Scripts<'s> {
             .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
             .collect()
     }
-    pub fn save_stacktrace_args(&self, job_id: &str, stacktrace: &str, failed_reason: &str) -> (Vec<String>, Vec<String>){
+    pub fn save_stacktrace_args(
+        &self,
+        job_id: &str,
+        stacktrace: &str,
+        failed_reason: &str,
+    ) -> (Vec<String>, Vec<String>) {
         let keys = vec![self.to_key(job_id)];
         let args = vec![stacktrace.to_string(), failed_reason.to_string()];
 
         (keys, args)
     }
-   pub fn retry_jobs_args(&self, job_id: &str,lifo:bool, token: &str) -> (Vec<String>, Vec<String>){
-
-      let mut keys  = self.get_keys(&["active", "wait", "paused"]);
+    pub fn retry_jobs_args(
+        &self,
+        job_id: &str,
+        lifo: bool,
+        token: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut keys = self.get_keys(&["active", "wait", "paused"]);
         keys.push(self.to_key(job_id));
         keys.push(self.to_key("meta"));
-          keys.push(self.to_key("meta"));
-            keys.push(self.to_key("meta"));
-
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("delayed"));
+        keys.push(self.to_key("priority"));
         
+        let push_cmd = if lifo { 'R' } else { 'L' };
+        let args = vec![ self.keys.get("").unwrap()];
 
-
-
-         todo!("retry_jobs_args")
+        todo!("retry_jobs_args")
     }
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
@@ -231,7 +240,7 @@ impl<'s> Scripts<'s> {
     ) -> anyhow::Result<R> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
-        let timestamp = self.generate_timestamp()?;
+        let timestamp = generate_timestamp()?;
         let lock_duration = opts.lock_duration.to_string();
         let limiter = serde_json::to_string(&opts.limiter)?;
 
@@ -281,7 +290,7 @@ impl<'s> Scripts<'s> {
         opts: &WorkerOptions,
         fetch_next: bool,
     ) -> anyhow::Result<(NextJobData)> {
-        let timestamp = self.generate_timestamp()?;
+        let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
@@ -358,16 +367,7 @@ impl<'s> Scripts<'s> {
     }
 
     //create a function that generates timestamps;
-    fn generate_timestamp(&self) -> anyhow::Result<u64> {
-        use std::time::SystemTime;
-        let result = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs()
-            * 1000;
-
-        Ok(result)
-    }
-
+    
     fn get_keep_jobs(&self, should_remove: bool) -> KeepJobs {
         if should_remove {
             return KeepJobs {
@@ -455,7 +455,7 @@ impl<'s> Scripts<'s> {
         stalled_interval: i64,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let stalled = self.keys.get("").unwrap();
-        let timestamp = self.generate_timestamp()?;
+        let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
             "stalled",
             "wait",
@@ -606,3 +606,13 @@ fn test_get_script() {
     // println!("{:?}", script);
     assert!(!script.is_empty());
 }
+
+pub fn generate_timestamp() -> anyhow::Result<u64> {
+        use std::time::SystemTime;
+        let result = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs()
+            * 1000;
+
+        Ok(result)
+    }
