@@ -1,14 +1,16 @@
-use core::num;
-use std::{borrow::Borrow, clone, collections::HashMap};
-
 use super::*;
 use anyhow::Ok;
+use core::num;
 use futures::{self, lock::Mutex};
 use redis::Commands;
+use redis::{FromRedisValue, RedisResult, ToRedisArgs};
 use serde::de::{Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
+use std::any::Any;
 use std::sync::Arc;
+use std::time;
+use std::{borrow::Borrow, clone, collections::HashMap};
 #[derive(Clone)]
 pub struct Job<'a, D, R> {
     pub name: &'a str,
@@ -67,8 +69,8 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
 //implement PartialEq for Job
 impl<
         'a,
-        D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'a> + Serialize + Send + Sync,
+        D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone + 'static,
     > PartialEq for Job<'a, D, R>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -78,8 +80,8 @@ impl<
 
 impl<
         'a,
-        D: Deserialize<'a> + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'a> + Serialize + Send + Sync,
+        D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'a> + Serialize + Send + Sync + FromRedisValue + Clone + 'static,
     > Job<'a, D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
@@ -201,10 +203,10 @@ impl<
         self.failed_reason = Some(err.clone());
         let mut move_to_failed = false;
 
-        let finished_on = 0;
-        let mut  command = "moveToFailed";
+        let mut finished_on = 0;
+        let mut command = "moveToFailed";
         let mut conn = self.queue.manager.pool.clone().get().await?;
-        self.save_to_stacktrace(&mut conn, err).await?;
+        self.save_to_stacktrace(&mut conn, err.clone()).await?;
         let backoff_s = BackOff::new();
 
         if self.attempts_made < self.opts.attempts && !self.discarded {
@@ -217,16 +219,73 @@ impl<
             };
 
             let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy)?;
-             if let Some(num)  = delay {
-
-             }
-             else {
-                 //let (keys,args) = self.scripts.lock().await
-             }
-             
-              
+            if let Some(num) = delay {
+                if num == -1 {
+                    move_to_failed = true;
+                }
+                let timestamp = generate_timestamp()?;
+                let (keys, args) = self.scripts.lock().await.movee_to_delayed_args(
+                    &self.id,
+                    timestamp as i64 + num,
+                    token,
+                )?;
+                self.scripts
+                    .lock()
+                    .await
+                    .commands
+                    .get("moveToDelayed")
+                    .unwrap()
+                    .key(keys)
+                    .arg(args)
+                    .invoke_async::<_, ()>(&mut conn)
+                    .await?;
+                command = "delayed";
+            } else {
+                let (keys, args) =
+                    self.scripts
+                        .lock()
+                        .await
+                        .retry_jobs_args(&self.id, self.opts.lifo, token)?;
+                self.scripts
+                    .lock()
+                    .await
+                    .commands
+                    .get("retryJobs")
+                    .unwrap()
+                    .key(keys)
+                    .arg(args)
+                    .invoke_async::<_, ()>(&mut conn)
+                    .await?;
+                command = "retryJob";
+            }
         }
         move_to_failed = true;
+
+        if move_to_failed {
+            let worker_opts = WorkerOptions::default();
+
+            let err_message = err.clone();
+            let mut job = self.clone();
+            let remove_onfail = self.opts.remove_on_fail.bool;
+            let result = job
+                .scripts
+                .lock()
+                .await
+                .move_to_failed(
+                    self,
+                    err_message,
+                    remove_onfail,
+                    token,
+                    &worker_opts,
+                    fetch_next,
+                )
+                .await?;
+
+            finished_on = generate_timestamp()?;
+        }
+        if finished_on > 0 {
+            self.finished_on = finished_on as i64;
+        }
 
         Ok(())
     }

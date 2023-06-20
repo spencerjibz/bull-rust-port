@@ -26,6 +26,7 @@ pub struct JobOptions {
     pub fail_parent_on_failure: bool, // if true, moves parent to failed
     pub stacktrace_limit: Option<usize>,
     pub backoff: (i64, Option<BackOffOptions>), //
+    pub lifo: bool, // if true, adds the job to the right of the queue instead of the left
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -54,6 +55,7 @@ impl Default for JobOptions {
             fail_parent_on_failure: false,
             stacktrace_limit: None,
             backoff: (0, None),
+            lifo: false,
         }
     }
 }

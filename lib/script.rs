@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
+use crate::{job, JobOptions, KeepJobs, WorkerOptions};
 use crate::{job::Job, redis_connection::*};
-use crate::{JobOptions, KeepJobs, WorkerOptions};
 use anyhow::Error;
 use anyhow::Ok;
 use anyhow::Result;
@@ -103,18 +103,24 @@ impl<'s> Scripts<'s> {
         job_id: &str,
         lifo: bool,
         token: &str,
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
         let mut keys = self.get_keys(&["active", "wait", "paused"]);
         keys.push(self.to_key(job_id));
         keys.push(self.to_key("meta"));
         keys.push(self.to_key("events"));
         keys.push(self.to_key("delayed"));
         keys.push(self.to_key("priority"));
-        
-        let push_cmd = if lifo { 'R' } else { 'L' };
-        let args = vec![ self.keys.get("").unwrap()];
 
-        todo!("retry_jobs_args")
+        let push_cmd = if lifo { "R" } else { "L" };
+
+        let args = vec![
+            self.keys.get("").unwrap().to_owned(),
+            generate_timestamp()?.to_string(),
+            push_cmd.to_string(),
+            job_id.to_string(),
+            token.to_string(),
+        ];
+        Ok((keys, args))
     }
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
@@ -367,7 +373,7 @@ impl<'s> Scripts<'s> {
     }
 
     //create a function that generates timestamps;
-    
+
     fn get_keep_jobs(&self, should_remove: bool) -> KeepJobs {
         if should_remove {
             return KeepJobs {
@@ -537,13 +543,13 @@ impl<'s> Scripts<'s> {
         )
         .await
     }
-    async fn move_to_failed<
+    pub async fn move_to_failed<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
+        R: FromRedisValue + Any + Send + Sync  + 'static + Clone,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
-        failed_reason: &'static str,
+        failed_reason: String,
         remove_on_failure: bool,
         token: &str,
         opts: &WorkerOptions,
@@ -578,6 +584,41 @@ impl<'s> Scripts<'s> {
             .await?;
         Ok(result)
     }
+
+    pub fn movee_to_delayed_args(
+        &self,
+        job_id: &str,
+        timestamp: i64,
+        token: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        use std::cmp::max;
+        let mut max_timestamp = max(0, timestamp);
+        let int = job_id.parse::<i64>()?;
+        if timestamp > 0 {
+            max_timestamp = max_timestamp * 0x1000 + (int & 0xfff);
+        }
+        let mut keys = self.get_keys(&["wait", "active", "priority", "delayed"]);
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("paused"));
+        keys.push(self.to_key("meta"));
+
+        let current_timestamp = generate_timestamp()?;
+        let first_key = self.keys.get("").unwrap().to_owned();
+        let args = vec![
+            first_key,
+            current_timestamp.to_string(),
+            max_timestamp.to_string(),
+            job_id.to_string(),
+            token.to_string(),
+        ];
+        Ok((keys, args))
+    }
+
+    pub fn move_to_failed_args() -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        unimplemented!()
+    }
+
 }
 
 pub fn print_type_of<T>(_: &T) -> String {
@@ -608,11 +649,11 @@ fn test_get_script() {
 }
 
 pub fn generate_timestamp() -> anyhow::Result<u64> {
-        use std::time::SystemTime;
-        let result = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs()
-            * 1000;
+    use std::time::SystemTime;
+    let result = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs()
+        * 1000;
 
-        Ok(result)
-    }
+    Ok(result)
+}

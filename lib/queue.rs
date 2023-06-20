@@ -49,7 +49,7 @@ impl<'c> Queue<'c> {
     }
     pub async fn add<
         D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static + std::fmt::Debug,
-        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
+        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static + Copy,
     >(
         &'c self,
         name: &'static str,
