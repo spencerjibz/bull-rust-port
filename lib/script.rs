@@ -93,7 +93,20 @@ impl<'s> Scripts<'s> {
 
         (keys, args)
     }
+   pub fn retry_jobs_args(&self, job_id: &str,lifo:bool, token: &str) -> (Vec<String>, Vec<String>){
 
+      let mut keys  = self.get_keys(&["active", "wait", "paused"]);
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("meta"));
+          keys.push(self.to_key("meta"));
+            keys.push(self.to_key("meta"));
+
+        
+
+
+
+         todo!("retry_jobs_args")
+    }
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
         job: &Job<'s, D, R>,

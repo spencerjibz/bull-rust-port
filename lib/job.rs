@@ -1,3 +1,4 @@
+use core::num;
 use std::{borrow::Borrow, clone, collections::HashMap};
 
 use super::*;
@@ -201,7 +202,7 @@ impl<
         let mut move_to_failed = false;
 
         let finished_on = 0;
-        let command = "moveToFailed";
+        let mut  command = "moveToFailed";
         let mut conn = self.queue.manager.pool.clone().get().await?;
         self.save_to_stacktrace(&mut conn, err).await?;
         let backoff_s = BackOff::new();
@@ -216,7 +217,16 @@ impl<
             };
 
             let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy)?;
+             if let Some(num)  = delay {
+
+             }
+             else {
+                 //let (keys,args) = self.scripts.lock().await
+             }
+             
+              
         }
+        move_to_failed = true;
 
         Ok(())
     }
