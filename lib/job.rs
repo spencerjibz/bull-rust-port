@@ -80,7 +80,7 @@ impl<
 
 impl<
         'a,
-        D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
+        D: Deserialize<'a> + Serialize + Clone  + Send + Sync,
         R: Deserialize<'a> + Serialize + Send + Sync + FromRedisValue + Clone + 'static,
     > Job<'a, D, R>
 {

@@ -52,7 +52,7 @@ struct Worker<'a, D, R> {
 // impl     Worker<'a, D, R>
 impl<
         'a,
-        D: Send + Sync + Clone + 'static + Serialize,
+        D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + ,
         R: Send
             + Sync
             + Clone
@@ -199,29 +199,41 @@ impl<
                             .await
                             .context("Error completing job")?;
                         let done = result.clone();
+                        let name = job.name;
+                    let id = job.id.clone();
+                    
                         self.emitter
-                            .emit("completed", (job.name, job.id, done))
+                            .emit("completed", (name, id, done))
                             .await;
                     }
 
-                    Ok(())
+                    
                 } else {
                     let e = res.err().unwrap();
                     self.emitter.emit("error", e.to_string()).await;
 
-                    Err(anyhow!("Error processing job"))
+                    return Err(anyhow!("Error processing job"))
                 }
             }
             Err(e) => {
                 self.emitter
-                    .emit("error", (e.to_string(), job.name, job.id))
+                    .emit("error", (e.to_string(), job.name, job.id.clone()))
                     .await;
 
                   if ! self.force_closing {
-                     //let done = job.move_to_failed(e.to_string(), token, &self.options).await?;
+                    println!("Error processing job: {}", e);
+                    job.move_to_failed(e.to_string(), token, false).await?;
+                    let name = job.name;
+                    let id = job.id.clone();
+                    self.emitter
+                        .emit("failed", (name, id, e.to_string()))
+                        .await;
                   }
-                Err(anyhow!("Error processing job"))
+                return Err(anyhow!("Error processing job"))
             }
         }
+
+        self.jobs.remove(&JobSetPair(job.clone(), token));
+         Ok(())
     }
 }
