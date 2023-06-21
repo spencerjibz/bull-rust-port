@@ -239,11 +239,11 @@ impl<'s> Scripts<'s> {
         Ok(result)
     }
 
-    async fn move_to_active_queue<R: FromRedisValue>(
+    pub async fn move_to_active(
         &mut self,
         token: &str,
         opts: WorkerOptions,
-    ) -> anyhow::Result<R> {
+    ) -> anyhow::Result<NextJobData> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
@@ -265,7 +265,7 @@ impl<'s> Scripts<'s> {
         let first_arg = self.keys.get("").unwrap_or(d);
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let mut conn = &mut self.connection.get().await?;
-        let result: R = self
+        let result: Vec<Vec<String>> = self
             .commands
             .get("moveToActive")
             .unwrap()
@@ -276,8 +276,10 @@ impl<'s> Scripts<'s> {
             .arg(packed_opts)
             .invoke_async(conn)
             .await?;
+        
+        let end  = self.raw_to_next_job_data(&result);
 
-        Ok(result)
+        Ok(end)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -357,11 +359,11 @@ impl<'s> Scripts<'s> {
             // I do not like this as it is using a sideeffect
             job.finished_on = timestamp as i64;
 
-            let slice_of_string = print_type_of(&vec![vec![""]]);
+            let slice_of_string = print_type_of(&vec![vec!["".to_string()]]);
 
             if print_type_of(&res) == slice_of_string {
                 let n = Box::new(res) as Box<dyn Any>;
-                let n = n.downcast::<Vec<Vec<&str>>>().unwrap();
+                let n = n.downcast::<Vec<Vec<String>>>().unwrap();
                 let v = *n;
 
                 let returned_result = self.raw_to_next_job_data(&v);
@@ -410,7 +412,7 @@ impl<'s> Scripts<'s> {
         }
     }
 
-    fn array_to_object(&self, arr: &[&str]) -> HashMap<String, String> {
+    fn array_to_object(&self, arr: &[String]) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for (i, v) in arr.iter().enumerate() {
             if i % 2 == 0 {
@@ -419,7 +421,7 @@ impl<'s> Scripts<'s> {
         }
         result
     }
-    fn raw_to_next_job_data(&self, mut raw: &Vec<Vec<&str>>) -> NextJobData {
+    fn raw_to_next_job_data(&self, mut raw: &Vec<Vec<String>>) -> NextJobData {
         let len = raw.len();
         if !raw.is_empty() {
             // check if the  first element is present in the array;
@@ -626,7 +628,7 @@ pub fn print_type_of<T>(_: &T) -> String {
 }
 
 type Map = HashMap<String, String>;
-type NextJobData = Option<(Option<Map>, Option<Map>)>;
+pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
 
 // test
 

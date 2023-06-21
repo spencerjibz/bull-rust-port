@@ -240,4 +240,13 @@ impl<
         self.jobs.remove(&JobSetPair(job.clone(), token));
          Ok(())
     }
+
+    pub async fn getnext_job(&mut self,token: &'a str) -> anyhow::Result<Option<Job<'a, D, R>>> {
+        let mut scripts = self.scripts.lock().await;
+         let options = self.options.clone();
+        let result  = scripts.move_to_active(token,options).await?;
+        
+
+        Ok(None)
+    }
 }
