@@ -122,6 +122,10 @@ impl<
         self.timer = Some(timer);
         self.stalled_check_timer = Some(stalled_check_timer);
 
+        let token  = uuid::Uuid::new_v4().to_string();
+        
+
+
         Ok(())
     }
 
