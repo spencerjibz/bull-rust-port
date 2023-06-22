@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::Ok;
+
 use core::num;
 use futures::{self, lock::Mutex};
 use redis::Commands;
@@ -80,8 +80,15 @@ impl<
 
 impl<
         'a,
-        D: Deserialize<'a> + Serialize + Clone  + Send + Sync,
-        R: Deserialize<'a> + Serialize + Send + Sync + FromRedisValue + Clone + 'static,
+        D: Deserialize<'a> + Serialize + Clone + Send + Sync,
+        R: Deserialize<'a>
+            + Serialize
+            + Send
+            + Sync
+            + FromRedisValue
+            + Clone
+            + 'static
+            + std::fmt::Debug,
     > Job<'a, D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
@@ -136,18 +143,14 @@ impl<
         job_id: &'a str,
     ) -> anyhow::Result<Job<'a, D, R>> {
         // use serde_json to convert to job;
-
+        //println!("raw_string: {:?}", raw_string);
         let json = JobJsonRaw::fromStr(to_static_str(raw_string))?;
-        //println!("json: {:?}", json);
 
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
 
         let d = json.data;
         let data = serde_json::from_str::<D>(d)?;
-        // println!("data: {:?}", data);
-
-        //let  return_value = serde_json::from_str::<R>(json.return_value)?;
 
         let mut job = Self::new(name, queue, data, opts).await?;
         job.id = job_id.to_string();
@@ -155,7 +158,10 @@ impl<
         job.attempts_made = json.attempts_made.parse::<i64>().unwrap_or_default();
         job.timestamp = json.timestamp.parse::<i64>()?;
         job.delay = json.delay.parse::<i64>()?;
-        //
+        if !json.return_value.is_empty() {
+            let return_value = serde_json::from_str::<R>(json.return_value)?;
+            job.return_value = Some(return_value);
+        }
         job.finished_on = json
             .finished_on
             .unwrap_or(&String::from("0"))
@@ -328,7 +334,7 @@ impl<
 impl<
         'a,
         D: Deserialize<'a> + Clone + Serialize + std::fmt::Debug,
-        R: Deserialize<'a> + Serialize,
+        R: Deserialize<'a> + Serialize + std::fmt::Debug,
     > std::fmt::Debug for Job<'a, D, R>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -352,6 +358,7 @@ impl<
             .field("processed_on", &self.processed_on)
             .field("finished_on", &self.finished_on)
             .field("discarded", &self.discarded)
+            .field("return_value", &self.return_value)
             .finish()
     }
 }
@@ -372,7 +379,23 @@ pub struct Data {
     #[serde(rename = "trackingID")]
     pub tracking_id: String,
 }
+use derive_redis_json::RedisJsonValue;
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, RedisJsonValue)]
+pub struct ReturnedData {
+    pub status: String,
+    pub count: f32,
+    #[serde(rename = "socketId")]
+    pub socket_id: String,
+    pub cid: String,
+    #[serde(rename = "fileID")]
+    pub file_id: String,
+    pub sizes: Vec<Size>,
+    #[serde(rename = "userID")]
+    pub user_id: String,
+    #[serde(rename = "trackingID")]
+    pub tracking_id: String,
+}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Size {
     pub width: i64,
@@ -428,13 +451,13 @@ mod tests {
 
             let result: HashMap<String, String> =
                 queue.client.hgetall("bull:pinningQueue:201").await.unwrap();
-            //let json = JobJsonRaw::from_map(result.clone()).unwrap();
-            //json.save_to_file("test.json").unwrap();
+            let json = JobJsonRaw::from_map(result.clone()).unwrap();
+             json.save_to_file("test.json").unwrap();
 
             // println!("{:#?}", worker.clone());
             let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
 
-            let job = Job::<Data, String>::from_json(&queue, contents, "254")
+            let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "254")
                 .await
                 .unwrap();
             //println!(" job : {job:#?}",);
