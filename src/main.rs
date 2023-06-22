@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     // get the values and log it;
     let value: WorkerOptions = con.get("worker").await?;
 
-    let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:202").await?;
+    let result: HashMap<String, String> = con.hgetall("bull:pinningQueue:204").await?;
 
     if result.is_empty() {
         println!("No data found");
@@ -45,9 +45,8 @@ async fn main() -> anyhow::Result<()> {
         // println!("{:#?}", worker.clone());
         // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
         let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
-       println!("{:#?}", contents);
 
-        let job = Job::<Data, Option<String>>::from_json(&queue, contents, "202").await?;
+        let job = Job::<Data, Option<ReturnedData>>::from_json(&queue, contents, "167").await?;
         println!("{:#?}", job);
         // println!(" {value:#?}");
         println!("{:?}", n.elapsed());
