@@ -5,13 +5,13 @@
   "delay": "0",
   "opts": "{\"removeOnFail\":{\"age\":3600},\"removeOnComplete\":{\"age\":86400},\"delay\":0,\"attempts\":0}",
   "progress": "",
-  "attempts_made": "",
+  "attempts_made": "1",
   "timestamp": "1685379372292",
   "failed_reason": "",
   "stack_trace": [],
-  "return_value": "",
+  "return_value": "{\"status\":\"pinned\",\"count\":1.0274669000003487,\"cid\":\"QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP\",\"sizes\":[{\"width\":1080,\"height\":1920},{\"width\":720,\"height\":1280},{\"width\":480,\"height\":640}],\"socketId\":\"XJ7TZ-TFA_Y7fsIAAADH\",\"fileID\":\"6474d92ca388318ebb532afd\",\"userID\":\"644143ef3515c20d0ce241ec\",\"trackingID\":\"QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP\"}",
   "parent": null,
   "rjk": null,
-  "finished_on": null,
-  "processed_on": null
+  "finished_on": "1685379375334",
+  "processed_on": "1685379372295"
 }
