@@ -8,8 +8,8 @@ pub use derive_redis_json::RedisJsonValue;
 use rand::prelude::*;
 use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
 pub use serde::{Deserialize, Serialize};
-use std::{borrow::Borrow, collections::HashMap, default, fmt::Display};
 use std::sync::Arc;
+use std::{borrow::Borrow, collections::HashMap, default, fmt::Display};
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
 pub struct KeepJobs {
     pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
@@ -91,11 +91,10 @@ pub struct MetricOptions {
     pub max_data_points: String,
 }
 
-#[derive(Default,Clone)]
+#[derive(Default, Clone)]
 pub struct QueueSettings {
-   pub  backoff_strategy: Option<Arc<BoxedFn>>,
+    pub backoff_strategy: Option<Arc<BoxedFn>>,
 }
-
 
 //implement fmt::Debug for QueueSettings
 use std::fmt;
@@ -151,8 +150,8 @@ pub struct JobJsonRaw {
     pub timestamp: &'static str,
     #[serde(borrow)]
     pub failed_reason: &'static str,
-    #[serde(borrow)]
-    pub stack_trace: Vec<&'static str>,
+
+    pub stack_trace: Vec<String>,
     #[serde(borrow)]
     pub return_value: &'static str,
     #[serde(borrow)]
@@ -177,18 +176,19 @@ impl JobJsonRaw {
                 "delay" => job.delay = v,
                 "opts" => job.opts = v,
                 "progress" => job.progress = v,
-                "attempts_made" => job.attempts_made = v,
+                "attempts_made" | "attemptsMade" => job.attempts_made = v,
                 "timestamp" => job.timestamp = v,
-                "failed_reason" => job.failed_reason = v,
-                "stack_trace" => job.stack_trace = serde_json::from_str(v)?,
-                "return_value" => job.return_value = v,
+                "failed_reason" | "failedReason" => job.failed_reason = v,
+                "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_str(v)?,
+                "returnvalue" => job.return_value = v,
                 "parent" => job.parent = Some(v),
                 "rjk" => job.rjk = Some(v),
-                "finished_on" => job.finished_on = Some(v),
-                "processed_on" => job.processed_on = Some(v),
+                "finished_on" | "finishedOn" => job.finished_on = Some(v),
+                "processed_on" | "processedOn" => job.processed_on = Some(v),
                 _ => (),
             }
         }
+
         Ok(job)
     }
     #[allow(non_snake_case)]
