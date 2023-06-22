@@ -1,4 +1,5 @@
 /target
+.vscode
 .env
 *.json # ignore all json files
 !test.json # except this one
