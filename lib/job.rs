@@ -175,10 +175,8 @@ impl<
         job.repeat_job_key = json.rjk;
 
         job.stack_trace = json
-            .stack_trace
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect();
+            .stack_trace;
+        
 
         Ok(job)
     }
