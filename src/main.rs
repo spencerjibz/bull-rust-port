@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         // println!("{:#?}", worker.clone());
         // let j = serde_json::to_string(&result).unwrap_or("{}".to_string());
         let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
+       println!("{:#?}", contents);
 
         let job = Job::<Data, Option<String>>::from_json(&queue, contents, "202").await?;
         println!("{:#?}", job);

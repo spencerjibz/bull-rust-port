@@ -243,7 +243,7 @@ impl<'s> Scripts<'s> {
         &mut self,
         token: &str,
         opts: WorkerOptions,
-    ) -> anyhow::Result<NextJobData> {
+    ) -> anyhow::Result<MoveToAciveResult> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
@@ -265,7 +265,7 @@ impl<'s> Scripts<'s> {
         let first_arg = self.keys.get("").unwrap_or(d);
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let mut conn = &mut self.connection.get().await?;
-        let result: Vec<Vec<String>> = self
+        let result: MoveToAciveResult = self
             .commands
             .get("moveToActive")
             .unwrap()
@@ -276,10 +276,8 @@ impl<'s> Scripts<'s> {
             .arg(packed_opts)
             .invoke_async(conn)
             .await?;
-        
-        let end  = self.raw_to_next_job_data(&result);
 
-        Ok(end)
+        Ok(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -547,7 +545,7 @@ impl<'s> Scripts<'s> {
     }
     pub async fn move_to_failed<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync  + 'static + Clone,
+        R: FromRedisValue + Any + Send + Sync + 'static + Clone,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
@@ -620,7 +618,6 @@ impl<'s> Scripts<'s> {
     pub fn move_to_failed_args() -> anyhow::Result<(Vec<String>, Vec<String>)> {
         unimplemented!()
     }
-
 }
 
 pub fn print_type_of<T>(_: &T) -> String {
@@ -629,6 +626,7 @@ pub fn print_type_of<T>(_: &T) -> String {
 
 type Map = HashMap<String, String>;
 pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
+pub type MoveToAciveResult = (Option<Map>, Option<String>,u64, Option<u64>);
 
 // test
 

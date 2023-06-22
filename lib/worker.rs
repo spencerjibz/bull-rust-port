@@ -6,6 +6,7 @@ use futures::future::{ok, BoxFuture, Future, FutureExt};
 use redis::{FromRedisValue, ToRedisArgs};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time;
 pub type WorkerCallback<'a, D, R> =
     dyn Fn(D) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
 use anyhow::{anyhow, Context, Result};
@@ -35,7 +36,7 @@ struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Pool,
     pub options: WorkerOptions,
-     emitter: AsyncEventEmitter,
+    emitter: AsyncEventEmitter,
     pub timer: Option<Timer>,
     pub stalled_check_timer: Option<Timer>,
     pub closing: bool,
@@ -47,12 +48,13 @@ struct Worker<'a, D, R> {
     pub prefix: String,
     force_closing: bool,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
+    pub queue: &'a Queue<'a>,
 }
 
 // impl     Worker<'a, D, R>
 impl<
         'a,
-        D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + ,
+        D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize,
         R: Send
             + Sync
             + Clone
@@ -64,7 +66,12 @@ impl<
             + Deserialize<'a>,
     > Worker<'a, D, R>
 {
-    pub async fn new<F>(name: &'a str, processor: F, opts: WorkerOptions) -> Worker<'a, D, R>
+    pub async fn new<F>(
+        name: &'a str,
+        queue: &'a Queue<'a>,
+        processor: F,
+        opts: WorkerOptions,
+    ) -> Worker<'a, D, R>
     where
         F: Fn(D) -> BoxFuture<'static, anyhow::Result<R>> + Send + Sync + 'static,
     {
@@ -91,6 +98,7 @@ impl<
             closing: false,
             scripts: Arc::new(Mutex::new(scripts)),
             stalled_check_timer: None,
+            queue,
         }
     }
 
@@ -122,9 +130,7 @@ impl<
         self.timer = Some(timer);
         self.stalled_check_timer = Some(stalled_check_timer);
 
-        let token  = uuid::Uuid::new_v4().to_string();
-        
-
+        let token = uuid::Uuid::new_v4().to_string();
 
         Ok(())
     }
@@ -204,19 +210,15 @@ impl<
                             .context("Error completing job")?;
                         let done = result.clone();
                         let name = job.name;
-                    let id = job.id.clone();
-                    
-                        self.emitter
-                            .emit("completed", (name, id, done))
-                            .await;
-                    }
+                        let id = job.id.clone();
 
-                    
+                        self.emitter.emit("completed", (name, id, done)).await;
+                    }
                 } else {
                     let e = res.err().unwrap();
                     self.emitter.emit("error", e.to_string()).await;
 
-                    return Err(anyhow!("Error processing job"))
+                    return Err(anyhow!("Error processing job"));
                 }
             }
             Err(e) => {
@@ -224,28 +226,60 @@ impl<
                     .emit("error", (e.to_string(), job.name, job.id.clone()))
                     .await;
 
-                  if ! self.force_closing {
+                if !self.force_closing {
                     println!("Error processing job: {}", e);
                     job.move_to_failed(e.to_string(), token, false).await?;
                     let name = job.name;
                     let id = job.id.clone();
-                    self.emitter
-                        .emit("failed", (name, id, e.to_string()))
-                        .await;
-                  }
-                return Err(anyhow!("Error processing job"))
+                    self.emitter.emit("failed", (name, id, e.to_string())).await;
+                }
+                return Err(anyhow!("Error processing job"));
             }
         }
 
         self.jobs.remove(&JobSetPair(job.clone(), token));
-         Ok(())
+        Ok(())
     }
 
-    pub async fn getnext_job(&mut self,token: &'a str) -> anyhow::Result<Option<Job<'a, D, R>>> {
+    pub async fn get_next_job(&mut self, token: &'a str) -> anyhow::Result<Option<Job<'a, D, R>>> {
         let mut scripts = self.scripts.lock().await;
-         let options = self.options.clone();
-        let result  = scripts.move_to_active(token,options).await?;
-        
+        let options = self.options.clone();
+        let (mut job, mut job_id, mut limit_until, mut delay_until) =
+            scripts.move_to_active(token, options.clone()).await?;
+
+        // if there are no jobs in the waiting list, we keep waiting with BBPOPLPUSH;
+
+        if job.is_none() {
+            let current_time = generate_timestamp()?;
+            let delay = if let Some(num) = delay_until {
+                num
+            } else {
+                5000
+            };
+
+            let timeout = std::cmp::min(delay, 5000) / 1000;
+
+            let mut connection = self.connection.get().await?;
+            let mut scripts = self.scripts.lock().await;
+            let wait_key = scripts.keys.get("wait").unwrap();
+            let active_key = scripts.keys.get("active").unwrap();
+            job_id = connection
+                .brpoplpush(wait_key, active_key, timeout as usize)
+                .await?;
+
+            if let Some(id) = job_id {
+                (job, job_id, limit_until, delay_until) =
+                    scripts.move_to_active(token, options).await?;
+            }
+        }
+
+        if let (Some(j), Some(id)) = (job, job_id) {
+            let json_string = serde_json::to_string(&j).unwrap();
+            let static_id = to_static_str(id);
+
+            let result = Job::<D, R>::from_json(self.queue, json_string, static_id).await?;
+            return Ok(Some(result));
+        }
 
         Ok(None)
     }
