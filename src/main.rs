@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         println!("date: {}", newdate);
 
         println!("{:?}", n.elapsed());
+        
     }
     Ok(())
 }

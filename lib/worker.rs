@@ -44,7 +44,7 @@ struct Worker<'a, D, R> {
     running: bool,
     scripts: Arc<Mutex<Scripts<'a>>>,
     pub jobs: HashSet<JobSetPair<'a, D, R>>,
-    pub processing: HashMap<&'a str, Arc<JoinHandle<R>>>,
+    pub processing: HashMap<&'a str, Job<'a, D, R>>,
     pub prefix: String,
     force_closing: bool,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
@@ -131,6 +131,27 @@ impl<
         self.stalled_check_timer = Some(stalled_check_timer);
 
         let token = uuid::Uuid::new_v4().to_string();
+        let stat_token = to_static_str(token);
+
+        while !self.closed {
+            if self.jobs.is_empty()
+                && self.processing.len() < self.options.concurrency
+                && !self.closing
+            {
+                //self.emitter.emit("drained", String::from("")).await;
+                let awaiting_job = self.get_next_job(stat_token).await?;
+                if let Some(waited) = awaiting_job {
+                    self.processing.insert(stat_token, waited);
+                }
+            }
+
+            if !self.jobs.is_empty() {
+                let jobs_to_process = self.jobs.clone().into_iter().map(|e| {
+                    let mut worker = self.clone();
+                    async move { worker.process_job(e.0, e.1).await }
+                });
+            }
+        }
 
         Ok(())
     }
@@ -178,7 +199,7 @@ impl<
         &mut self,
         mut job: Job<'a, D, R>,
         token: &'a str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         self.jobs.insert(JobSetPair(job.clone(), token));
 
         let callback = self.processor.clone();
@@ -197,7 +218,7 @@ impl<
                         let opts = self.options.clone();
                         let remove_on_complete = job.opts.remove_on_complete.bool;
                         let fetch = !self.closing;
-                        scripts
+                        let end = scripts
                             .move_to_completed(
                                 &mut job,
                                 result.clone(),
@@ -213,12 +234,17 @@ impl<
                         let id = job.id.clone();
 
                         self.emitter.emit("completed", (name, id, done)).await;
+                        self.jobs.remove(&JobSetPair(job.clone(), token));
+
+                        return Ok(end);
                     }
+                    Ok(None)
                 } else {
                     let e = res.err().unwrap();
                     self.emitter.emit("error", e.to_string()).await;
+                    self.jobs.remove(&JobSetPair(job.clone(), token));
 
-                    return Err(anyhow!("Error processing job"));
+                    Err(anyhow!("Error processing job"))
                 }
             }
             Err(e) => {
@@ -233,12 +259,10 @@ impl<
                     let id = job.id.clone();
                     self.emitter.emit("failed", (name, id, e.to_string())).await;
                 }
-                return Err(anyhow!("Error processing job"));
+                self.jobs.remove(&JobSetPair(job.clone(), token));
+                Err(anyhow!("Error processing job"))
             }
         }
-
-        self.jobs.remove(&JobSetPair(job.clone(), token));
-        Ok(())
     }
 
     pub async fn get_next_job(&mut self, token: &'a str) -> anyhow::Result<Option<Job<'a, D, R>>> {
@@ -284,5 +308,5 @@ impl<
         Ok(None)
     }
 
-    
+    pub async fn get_completed(&self) {}
 }

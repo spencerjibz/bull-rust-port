@@ -71,9 +71,10 @@ mod tests {
 
         timer.run();
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         timer.stop();
 
         assert!(!timer._ok);
     }
+    
 }

@@ -295,7 +295,7 @@ impl<'s> Scripts<'s> {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
@@ -356,17 +356,19 @@ impl<'s> Scripts<'s> {
             }
             // I do not like this as it is using a sideeffect
             job.finished_on = timestamp as i64;
+            let m: HashMap<String, String> = HashMap::new();
+            let expected = (Some(m), Some("".to_string()), 0_u64, Some(1_u64));
 
-            let slice_of_string = print_type_of(&vec![vec!["".to_string()]]);
+            let slice_of_string = print_type_of(&expected);
 
             if print_type_of(&res) == slice_of_string {
                 let n = Box::new(res) as Box<dyn Any>;
-                let n = n.downcast::<Vec<Vec<String>>>().unwrap();
+                let n = n.downcast::<MoveToAciveResult>().unwrap();
                 let v = *n;
 
-                let returned_result = self.raw_to_next_job_data(&v);
+                let returned_result = v;
 
-                return Ok(returned_result);
+                return Ok(Some(returned_result));
             }
         }
         Ok(None)
@@ -530,7 +532,7 @@ impl<'s> Scripts<'s> {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         self.move_to_finished(
             job,
             val,
@@ -554,7 +556,7 @@ impl<'s> Scripts<'s> {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -626,7 +628,7 @@ pub fn print_type_of<T>(_: &T) -> String {
 
 type Map = HashMap<String, String>;
 pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
-pub type MoveToAciveResult = (Option<Map>, Option<String>,u64, Option<u64>);
+pub type MoveToAciveResult = (Option<Map>, Option<String>, u64, Option<u64>);
 
 // test
 
