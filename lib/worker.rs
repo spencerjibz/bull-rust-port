@@ -6,6 +6,7 @@ use futures::future::{ok, BoxFuture, Future, FutureExt};
 use redis::{FromRedisValue, ToRedisArgs};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::os::windows::process;
 use std::time;
 pub type WorkerCallback<'a, D, R> =
     dyn Fn(D) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
@@ -14,6 +15,7 @@ use futures::lock::Mutex;
 use std::cell::RefCell;
 use std::sync::Arc;
 use tokio::task::{self, JoinHandle};
+
 #[derive(Clone)]
 struct JobSetPair<'a, D, R>(Job<'a, D, R>, &'a str);
 
@@ -44,7 +46,7 @@ struct Worker<'a, D, R> {
     running: bool,
     scripts: Arc<Mutex<Scripts<'a>>>,
     pub jobs: HashSet<JobSetPair<'a, D, R>>,
-    pub processing: HashMap<&'a str, Job<'a, D, R>>,
+    pub processing: Vec<Arc<JoinHandle<anyhow::Result<R>>>>,
     pub prefix: String,
     force_closing: bool,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
@@ -84,7 +86,7 @@ impl<
 
         Self {
             name,
-            processing: HashMap::new(),
+            processing: Vec::new(),
             jobs: HashSet::new(),
             connection: connection.pool,
             options: opts.clone(),
@@ -141,7 +143,14 @@ impl<
                 //self.emitter.emit("drained", String::from("")).await;
                 let awaiting_job = self.get_next_job(stat_token).await?;
                 if let Some(waited) = awaiting_job {
-                    self.processing.insert(stat_token, waited);
+                    let processor = self.processor.clone();
+
+                    let task = task::spawn(async move {
+                        let data = waited.data.clone();
+                        processor(data).await
+                    });
+
+                    self.processing.push(Arc::new(task));
                 }
             }
 
