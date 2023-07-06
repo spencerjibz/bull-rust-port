@@ -4,7 +4,7 @@ use core::num;
 use futures::{self, lock::Mutex};
 use redis::Commands;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs};
-use serde::de::{Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+use serde::de::{value, Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 use std::any::Any;
@@ -144,7 +144,8 @@ impl<
     ) -> anyhow::Result<Job<'a, D, R>> {
         // use serde_json to convert to job;
         //println!("raw_string: {:?}", raw_string);
-        let json = JobJsonRaw::fromStr(to_static_str(raw_string))?;
+
+        let json = JobJsonRaw::fromStr(raw_string)?;
 
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
@@ -174,9 +175,7 @@ impl<
 
         job.repeat_job_key = json.rjk;
 
-        job.stack_trace = json
-            .stack_trace;
-        
+        job.stack_trace = json.stack_trace;
 
         Ok(job)
     }
@@ -326,6 +325,17 @@ impl<
         }
         Ok(())
     }
+
+    pub fn to_string(&self) -> anyhow::Result<String> {
+        let string = serde_json::to_string(&self)?;
+        Ok(string)
+    }
+    pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, self)?;
+
+        Ok(())
+    }
 }
 
 // implement fmt::Debug for Job;
@@ -448,17 +458,23 @@ mod tests {
                 .unwrap();
 
             let result: HashMap<String, String> =
-                queue.client.hgetall("bull:pinningQueue:201").await.unwrap();
-            let json = JobJsonRaw::from_map(result.clone()).unwrap();
-             json.save_to_file("test.json").unwrap();
+                queue.client.hgetall("bull:pinningQueue:207").await.unwrap();
+
+            let contents = if !result.is_empty() {
+                serde_json::to_string(&result).unwrap_or("{}".to_string())
+            } else {
+                tokio::fs::read_to_string("test.json").await.unwrap()
+            };
+
+            let json = JobJsonRaw::fromStr(contents.clone()).unwrap();
+            json.save_to_file("test.json").unwrap();
 
             // println!("{:#?}", worker.clone());
-            let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
 
-            let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "254")
+            let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "207")
                 .await
                 .unwrap();
-            //println!(" job : {job:#?}",);
+
             assert_eq!(job.name, "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP");
         });
     }

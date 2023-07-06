@@ -191,11 +191,69 @@ impl JobJsonRaw {
 
         Ok(job)
     }
+
+    pub fn from_value_map(map: HashMap<String, serde_json::Value>) -> anyhow::Result<JobJsonRaw> {
+        let mut job = JobJsonRaw::default();
+        for (k, v) in map {
+            match k.as_str() {
+                "id" => job.id = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "name" => job.name = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "data" => job.data = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "delay" => job.delay = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "opts" => job.opts = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "progress" => job.progress = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "attempts_made" | "attemptsMade" => {
+                    job.attempts_made = to_static_str(v.as_str().unwrap_or("").to_string())
+                }
+                "timestamp" => job.timestamp = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "failed_reason" | "failedReason" => {
+                    job.failed_reason = to_static_str(v.as_str().unwrap_or("").to_string())
+                }
+                "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_value(v)?,
+                "returnvalue" | "return_value" | "returnValue" => {
+                    job.return_value = to_static_str(v.as_str().unwrap_or("").to_string())
+                }
+                "parent" => {
+                    job.parent = if v.is_null() {
+                        None
+                    } else {
+                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                    }
+                }
+                "rjk" => {
+                    job.rjk = if v.is_null() {
+                        None
+                    } else {
+                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                    }
+                }
+                "finished_on" | "finishedOn" => {
+                    job.finished_on = if v.is_null() {
+                        None
+                    } else {
+                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                    }
+                }
+                "processed_on" | "processedOn" => {
+                    job.processed_on = if v.is_null() {
+                        None
+                    } else {
+                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        Ok(job)
+    }
     #[allow(non_snake_case)]
-    pub fn fromStr(s: &'static str) -> anyhow::Result<JobJsonRaw> {
+    pub fn fromStr(s: String) -> anyhow::Result<JobJsonRaw> {
         // passed the map;
-        let map: HashMap<String, String> = serde_json::from_str(s)?;
-        let json = JobJsonRaw::from_map(map)?;
+        let static_str = to_static_str(s);
+        let map: HashMap<String, serde_json::Value> = serde_json::from_str(static_str)?;
+
+        let json = JobJsonRaw::from_value_map(map)?;
         Ok(json)
     }
     pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
