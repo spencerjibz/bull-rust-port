@@ -2,7 +2,7 @@ use crate::emitter::AsyncEventEmitter;
 use crate::timer::Timer;
 use crate::*;
 use anyhow::Ok;
-use futures::future::{ok, BoxFuture, Future, FutureExt};
+use futures::future::{BoxFuture, Future, FutureExt};
 use redis::{FromRedisValue, ToRedisArgs};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -33,6 +33,8 @@ impl<'a, D, R> std::hash::Hash for JobSetPair<'a, D, R> {
         self.1.hash(state);
     }
 }
+
+type ProcessingHandle<R> = Arc<JoinHandle<anyhow::Result<R>>>;
 #[derive(Clone)]
 struct Worker<'a, D, R> {
     pub name: &'a str,
@@ -46,7 +48,7 @@ struct Worker<'a, D, R> {
     running: bool,
     scripts: Arc<Mutex<Scripts<'a>>>,
     pub jobs: HashSet<JobSetPair<'a, D, R>>,
-    pub processing: Vec<Arc<JoinHandle<anyhow::Result<R>>>>,
+    pub processing: Vec<ProcessingHandle<R>>,
     pub prefix: String,
     force_closing: bool,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
@@ -156,11 +158,24 @@ impl<
 
             if !self.jobs.is_empty() {
                 let jobs_to_process = self.jobs.clone().into_iter().map(|e| {
-                    let mut worker = self.clone();
-                    async move { worker.process_job(e.0, e.1).await }
+                    let data = e.0.data;
+                    let processor = self.processor.clone();
+
+                    let task = task::spawn(async move { processor(data).await });
+                    Arc::new(task)
                 });
+
+                self.processing.extend(jobs_to_process);
+            }
+            let (finished, pending) = self.get_completed().await?;
+            self.processing = pending;
+            if finished.is_empty() && self.processing.is_empty() && self.closing {
+                break;
             }
         }
+        self.running = false;
+        self.timer.as_mut().unwrap().stop();
+        self.stalled_check_timer.as_mut().unwrap().stop();
 
         Ok(())
     }
@@ -317,5 +332,41 @@ impl<
         Ok(None)
     }
 
-    pub async fn get_completed(&self) {}
+    pub async fn get_completed(
+        &self,
+    ) -> anyhow::Result<(Vec<Result<R>>, Vec<ProcessingHandle<R>>)> {
+        let (finished, pending): (Vec<_>, Vec<_>) = self
+            .processing
+            .clone()
+            .into_iter()
+            .partition(|e| e.is_finished());
+
+        let mut completed = Vec::new();
+        for job in finished {
+            let result = Arc::into_inner(job);
+            if let Some(handle) = result {
+                let res = handle.await?;
+                completed.push(res);
+            }
+        }
+
+        Ok((completed, pending))
+    }
+
+    pub fn cancel_processing(&mut self) {
+        for job in self.processing.clone() {
+            if !job.is_finished() {
+                job.abort();
+            }
+        }
+    }
+
+    pub fn close(&mut self, force: bool) {
+        if force {
+            self.force_closing = true;
+            self.cancel_processing();
+        }
+        self.closing = true;
+        self.connection.close();
+    }
 }
