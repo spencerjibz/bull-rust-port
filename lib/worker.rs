@@ -38,7 +38,7 @@ type ProcessingHandle<R> = Arc<JoinHandle<anyhow::Result<R>>>;
 #[derive(Clone)]
 struct Worker<'a, D, R> {
     pub name: &'a str,
-    pub connection: Pool,
+    pub connection: Arc<Pool>,
     pub options: WorkerOptions,
     emitter: AsyncEventEmitter,
     pub timer: Option<Timer>,
@@ -90,7 +90,7 @@ impl<
             name,
             processing: Vec::new(),
             jobs: HashSet::new(),
-            connection: connection.pool,
+            connection: Arc::new(connection.pool),
             options: opts.clone(),
             emitter,
             prefix: opts.clone().prefix,
@@ -114,19 +114,17 @@ impl<
         let copy = Arc::new(Mutex::new(self.clone()));
         let timer = Timer::new(self.options.lock_duration as u64 / 2, move || {
             let mut worker = copy.clone();
-            async move {
+            Box::pin(async move {
                 worker.lock().await.extend_locks().await;
-            }
-            .boxed()
+            })
         });
 
         let cp = Arc::new(Mutex::new(self.clone()));
         let stalled_check_timer = Timer::new(self.options.stalled_interval as u64, move || {
             let mut worker = cp.clone();
-            async move {
+            Box::pin(async move {
                 worker.lock().await.run_stalled_jobs().await;
-            }
-            .boxed()
+            })
         });
 
         self.running = true;
@@ -192,10 +190,10 @@ impl<
             .await?;
         if let [Some(failed), Some(stalled)] = [result.get(0), result.get(1)] {
             for job_id in failed {
-                self.emitter.emit("failed", job_id.to_string()).await;
+                self.emitter.emit("failed", job_id.to_string());
             }
             for job_id in stalled {
-                self.emitter.emit("stalled", job_id.to_string()).await;
+                self.emitter.emit("stalled", job_id.to_string());
             }
 
             return Ok(());
@@ -257,7 +255,7 @@ impl<
                         let name = job.name;
                         let id = job.id.clone();
 
-                        self.emitter.emit("completed", (name, id, done)).await;
+                        self.emitter.emit("completed", (name, id, done));
                         self.jobs.remove(&JobSetPair(job.clone(), token));
 
                         return Ok(end);
@@ -265,7 +263,7 @@ impl<
                     Ok(None)
                 } else {
                     let e = res.err().unwrap();
-                    self.emitter.emit("error", e.to_string()).await;
+                    self.emitter.emit("error", e.to_string());
                     self.jobs.remove(&JobSetPair(job.clone(), token));
 
                     Err(anyhow!("Error processing job"))
@@ -273,15 +271,14 @@ impl<
             }
             Err(e) => {
                 self.emitter
-                    .emit("error", (e.to_string(), job.name, job.id.clone()))
-                    .await;
+                    .emit("error", (e.to_string(), job.name, job.id.clone()));
 
                 if !self.force_closing {
                     println!("Error processing job: {}", e);
                     job.move_to_failed(e.to_string(), token, false).await?;
                     let name = job.name;
                     let id = job.id.clone();
-                    self.emitter.emit("failed", (name, id, e.to_string())).await;
+                    self.emitter.emit("failed", (name, id, e.to_string()));
                 }
                 self.jobs.remove(&JobSetPair(job.clone(), token));
                 Err(anyhow!("Error processing job"))
@@ -368,5 +365,20 @@ impl<
         }
         self.closing = true;
         self.connection.close();
+    }
+
+    pub fn on<F, T>(&mut self, event: &str, callback: F) -> String
+    where
+        for<'de> T: Deserialize<'de> + std::fmt::Debug,
+        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    {
+        self.emitter.on(event, callback)
+    }
+    pub fn once<F, T>(&mut self, event: &str, callback: F) -> String
+    where
+        for<'de> T: Deserialize<'de> + std::fmt::Debug,
+        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    {
+        self.emitter.once(event, callback)
     }
 }

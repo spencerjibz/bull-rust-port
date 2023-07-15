@@ -15,7 +15,7 @@ pub struct AsyncListener {
     id: String,
 }
 
-#[derive(Default,Clone)]
+#[derive(Default, Clone)]
 pub struct AsyncEventEmitter {
     pub listeners: HashMap<String, Vec<AsyncListener>>,
 }
@@ -25,7 +25,7 @@ impl AsyncEventEmitter {
         Self::default()
     }
 
-    pub async fn emit<'a,T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
+    pub async fn emit<'a, T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
     where
         T: Serialize + Deserialize<'a> + Send + Sync + 'a + std::fmt::Debug,
     {
@@ -83,7 +83,7 @@ impl AsyncEventEmitter {
         None
     }
 
-    pub async fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
+    pub fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
@@ -112,19 +112,19 @@ impl AsyncEventEmitter {
 
         id
     }
-    pub async fn once<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn once<F, T>(&mut self, event: &str, callback: F) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
-        self.on_limited(event, Some(1), callback).await
+        self.on_limited(event, Some(1), callback)
     }
-    pub async fn on<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn on<F, T>(&mut self, event: &str, callback: F) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
-        self.on_limited(event, None, callback).await
+        self.on_limited(event, None, callback)
     }
 }
 
@@ -180,16 +180,13 @@ mod tests {
             day: "Tuesday".to_string(),
         };
 
-        event_emitter
-            .on("LOG_DATE", |date: Date| {
-                async move { /*Do something here */ }.boxed()
-            })
-            .await;
-        event_emitter
-            .on("LOG_DATE", |date: Date| {
-                async move { println!(" emitted data: {:#?}", date) }.boxed()
-            })
-            .await;
+        event_emitter.on("LOG_DATE", |date: Date| {
+            async move { /*Do something here */ }.boxed()
+        });
+
+        event_emitter.on("LOG_DATE", |date: Date| {
+            async move { println!(" emitted data: {:#?}", date) }.boxed()
+        });
         event_emitter.emit("LOG_DATE", date).await;
         println!("{:#?}", event_emitter);
         assert!(event_emitter.listeners.get("LOG_DATE").is_some());
@@ -199,11 +196,9 @@ mod tests {
     async fn test_emit_multiple_args() {
         let mut event_emitter = AsyncEventEmitter::new();
         let name = "LOG_DATE".to_string();
-        event_emitter
-            .on("LOG_DATE", |tup: (Date, String)| {
-                async move { println!("{:#?}", tup) }.boxed()
-            })
-            .await;
+        event_emitter.on("LOG_DATE", |tup: (Date, String)| {
+            async move { println!("{:#?}", tup) }.boxed()
+        });
 
         event_emitter
             .emit(
