@@ -6,10 +6,9 @@ use futures::future::{BoxFuture, Future, FutureExt};
 use redis::{FromRedisValue, ToRedisArgs};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::os::windows::process;
 use std::time;
-pub type WorkerCallback<'a, D, R> =
-    dyn Fn(D) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
+pub type WorkerCallback<'a, D, R> =    
+dyn Fn(D) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
 use anyhow::{anyhow, Context, Result};
 use futures::lock::Mutex;
 use std::cell::RefCell;
