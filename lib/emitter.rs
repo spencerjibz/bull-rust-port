@@ -83,16 +83,17 @@ impl AsyncEventEmitter {
         None
     }
 
-    pub fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
+    fn on_limited<F, T, C>(&mut self, event: &str, limit: Option<u64>, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         let id = Uuid::new_v4().to_string();
         let parsed_callback = move |bytes: Vec<u8>| {
             let value: T = bincode::deserialize(&bytes).unwrap();
 
-            callback(value)
+            callback(value).boxed()
         };
 
         let listener = AsyncListener {
@@ -112,17 +113,19 @@ impl AsyncEventEmitter {
 
         id
     }
-    pub fn once<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.on_limited(event, Some(1), callback)
     }
-    pub fn on<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.on_limited(event, None, callback)
     }
@@ -181,11 +184,11 @@ mod tests {
         };
 
         event_emitter.on("LOG_DATE", |date: Date| {
-            async move { /*Do something here */ }.boxed()
+            async move { /*Do something here */ }
         });
 
-        event_emitter.on("LOG_DATE", |date: Date| {
-            async move { println!(" emitted data: {:#?}", date) }.boxed()
+        event_emitter.on("LOG_DATE", |date: Date| async move {
+            println!(" emitted data: {:#?}", date)
         });
         event_emitter.emit("LOG_DATE", date).await;
         println!("{:#?}", event_emitter);
@@ -193,11 +196,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_emit_multiple_args() {
+    async fn test_emit_multiple_args() -> anyhow::Result<()> {
         let mut event_emitter = AsyncEventEmitter::new();
         let name = "LOG_DATE".to_string();
-        event_emitter.on("LOG_DATE", |tup: (Date, String)| {
-            async move { println!("{:#?}", tup) }.boxed()
+        event_emitter.on("LOG_DATE", |tup: (Date, String)| async move {
+            println!("{:#?}", tup)
         });
 
         event_emitter
@@ -214,10 +217,11 @@ mod tests {
             .await;
 
         println!("{:?}", event_emitter.listeners);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn bincode_encode_test() {
+    async fn bincode_encode_test() -> anyhow::Result<()> {
         let example = DateTime(
             Date {
                 month: "January".to_string(),
@@ -228,8 +232,8 @@ mod tests {
                 minute: "30".to_string(),
             },
         );
-        let encoded: Vec<u8> = bincode::serialize(&example).unwrap();
-        let decoded: (Date, Time) = bincode::deserialize(&encoded).unwrap();
+        let encoded: Vec<u8> = bincode::serialize(&example)?;
+        let decoded: (Date, Time) = bincode::deserialize(&encoded)?;
         #[derive(Serialize, Deserialize, Debug)]
         struct DateTimeContainer {
             data: RefCell<DateTime>,
@@ -240,5 +244,46 @@ mod tests {
         };
 
         println!("{:#?}", container.data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listens_once_with_multiple_emits() {
+        let mut event_emitter = AsyncEventEmitter::new();
+        let name = "LOG_DATE".to_string();
+        event_emitter.once("LOG_DATE", |tup: (Date, String)| async move {
+            println!("{:#?}", tup)
+        });
+
+        event_emitter
+            .emit(
+                "LOG_DATE",
+                (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name.clone(),
+                ),
+            )
+            .await;
+        event_emitter
+            .emit(
+                "LOG_DATE",
+                (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name,
+                ),
+            )
+            .await;
+
+        assert_eq!(event_emitter.listeners.len(), 1);
+          if let Some(event) = event_emitter.listeners.get("LOG_DATE") {
+            println!("{event:?}")
+          }
+
     }
 }
