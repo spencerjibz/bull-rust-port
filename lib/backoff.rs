@@ -8,7 +8,6 @@ use anyhow::Ok;
 use crate::*;
 
 //import lazy_static
-
 #[derive(Clone, Default)]
 pub struct BackOff {
     pub builtin_strategies: HashMap<&'static str, Arc<BackoffFn>>,
@@ -28,7 +27,7 @@ impl BackOff {
     pub fn register(
         &mut self,
         name: &'static str,
-        strategy: impl Fn(i64) -> Box<dyn Fn(i64) -> i64 + Send + Sync > + 'static + Send + Sync,
+        strategy: impl Fn(i64) -> Box<dyn Fn(i64) -> i64 + Send + Sync> + 'static + Send + Sync,
     ) {
         self.builtin_strategies.insert(name, Arc::new(strategy));
     }
@@ -61,6 +60,10 @@ impl BackOff {
         }
 
         Ok(None)
+    }
+
+    pub fn has_strategy(&self, key: &str) -> bool {
+        self.builtin_strategies.contains_key(key)
     }
 
     pub fn lookup_strategy(
