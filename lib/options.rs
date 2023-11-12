@@ -27,6 +27,25 @@ pub struct JobOptions {
     pub stacktrace_limit: Option<usize>,
     pub backoff: (i64, Option<BackOffOptions>), //
     pub lifo: bool, // if true, adds the job to the right of the queue instead of the left
+    pub parent: Option<Parent>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+pub struct Parent {
+    pub id: String,
+    pub queue: String,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+pub struct RepeatOpts {
+    pub pattern: String,
+    pub limit: i64,
+    pub every: i64,
+    pub immmediately: bool,
+    pub count: i64,
+    pub prev_millis: i64,
+    pub offset: i64,
+    pub job_id: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -56,6 +75,7 @@ impl Default for JobOptions {
             stacktrace_limit: None,
             backoff: (0, None),
             lifo: false,
+            parent: None,
         }
     }
 }
