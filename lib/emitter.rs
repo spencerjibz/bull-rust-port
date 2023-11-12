@@ -1,6 +1,7 @@
 use crate::*;
 use bincode::{self, de};
 use std::{collections::HashMap, sync::Arc};
+
 use tokio::task::{self, JoinHandle};
 
 use futures::future::{BoxFuture, Future, FutureExt};
@@ -132,7 +133,7 @@ impl AsyncEventEmitter {
 }
 
 // test the AsyncEventEmitter
-// implment fmt::Debug for AsyncEventListener
+// implement fmt::Debug for AsyncEventListener
 use std::fmt;
 impl fmt::Debug for AsyncListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -251,7 +252,7 @@ mod tests {
     async fn listens_once_with_multiple_emits() {
         let mut event_emitter = AsyncEventEmitter::new();
         let name = "LOG_DATE".to_string();
-        event_emitter.once("LOG_DATE", |tup: (Date, String)| async move {
+        let listener_id = event_emitter.once("LOG_DATE", |tup: (Date, String)| async move {
             println!("{:#?}", tup)
         });
 
@@ -281,9 +282,10 @@ mod tests {
             .await;
 
         assert_eq!(event_emitter.listeners.len(), 1);
-          if let Some(event) = event_emitter.listeners.get("LOG_DATE") {
-            println!("{event:?}")
-          }
-
+        if let Some(event) = event_emitter.listeners.get("LOG_DATE") {
+            println!("{:?}", event)
+        }
     }
+    #[tokio::test]
+    async fn remove_listeners() {}
 }
