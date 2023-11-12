@@ -11,7 +11,6 @@ pub mod enums;
 mod job;
 pub use job::*;
 pub mod backoff;
-pub mod emitter;
 pub mod timer;
 pub mod worker;
 pub use backoff::*;
