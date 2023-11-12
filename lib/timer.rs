@@ -1,6 +1,6 @@
-use crate::emitter::AsyncCB;
 use crate::*;
-use bincode;
+use async_event_emitter::AsyncCB;
+
 use futures::future::{BoxFuture, Future, FutureExt};
 use std::sync::Arc;
 use std::time::Duration;
