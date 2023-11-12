@@ -19,11 +19,11 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new<F>(delay: u64, cb: F) -> Self
+    pub fn new<F>(delay_secs: u64, cb: F) -> Self
     where
         F: Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
-        let interval = Duration::from_secs(delay);
+        let interval = Duration::from_secs(delay_secs);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb();
         Self {
@@ -76,5 +76,4 @@ mod tests {
 
         assert!(!timer._ok);
     }
-    
 }
