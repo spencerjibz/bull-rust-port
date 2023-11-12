@@ -131,10 +131,11 @@ impl<'s> Scripts<'s> {
         let mut packed_args = Vec::new();
         encode::write_bin(&mut packed_args, prefix.as_bytes())?;
 
-        encode::write_bin(
-            &mut packed_args,
-            format!("{}{}{}", &job.id, &job.name, &job.timestamp).as_bytes(),
-        )?;
+        encode::write_bin(&mut packed_args, job.id.as_bytes())?;
+
+        encode::write_bin(&mut packed_args, job.name.as_bytes())?;
+        encode::write_bin(&mut packed_args, &job.timestamp.to_be_bytes())?;
+        encode::write_bin(&mut packed_args, &job.delay.to_be_bytes())?;
         // write the id,
 
         let json_data = serde_json::to_string(&job.data.clone())?;
