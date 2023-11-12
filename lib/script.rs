@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
+use crate::{job, JobOptions, KeepJobs, WorkerOptions};
 use crate::{job::Job, redis_connection::*};
-use crate::{JobOptions, KeepJobs, WorkerOptions};
 use anyhow::Error;
 use anyhow::Ok;
 use anyhow::Result;
@@ -13,18 +13,31 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, time};
 pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
 use crate::enums::ErrorCode::{self, *};
+use crate::redis_connection::*;
 use std::any::{self, Any};
-
-pub struct Stripts<'s> {
+#[derive(Clone)]
+pub struct Scripts<'s> {
     pub prefix: &'s str,
     pub queue_name: &'s str,
     pub keys: HashMap<&'s str, String>,
     pub commands: ScriptCommands<'s>,
-    pub connection: Connection,
+    pub connection: Pool,
 }
 
-impl<'s> Stripts<'s> {
-    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Connection) -> Self {
+// debug implementation for Scripts
+impl<'s> std::fmt::Debug for Scripts<'s> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scripts")
+            .field("prefix", &self.prefix)
+            .field("queue_name", &self.queue_name)
+            .field("keys", &self.keys)
+            .field("commands", &self.commands)
+            .finish()
+    }
+}
+
+impl<'s> Scripts<'s> {
+    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Pool) -> Self {
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",
@@ -74,7 +87,41 @@ impl<'s> Stripts<'s> {
             .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
             .collect()
     }
+    pub fn save_stacktrace_args(
+        &self,
+        job_id: &str,
+        stacktrace: &str,
+        failed_reason: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let keys = vec![self.to_key(job_id)];
+        let args = vec![stacktrace.to_string(), failed_reason.to_string()];
 
+        (keys, args)
+    }
+    pub fn retry_jobs_args(
+        &self,
+        job_id: &str,
+        lifo: bool,
+        token: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let mut keys = self.get_keys(&["active", "wait", "paused"]);
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("meta"));
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("delayed"));
+        keys.push(self.to_key("priority"));
+
+        let push_cmd = if lifo { "R" } else { "L" };
+
+        let args = vec![
+            self.keys.get("").unwrap().to_owned(),
+            generate_timestamp()?.to_string(),
+            push_cmd.to_string(),
+            job_id.to_string(),
+            token.to_string(),
+        ];
+        Ok((keys, args))
+    }
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
         job: &Job<'s, D, R>,
@@ -84,10 +131,11 @@ impl<'s> Stripts<'s> {
         let mut packed_args = Vec::new();
         encode::write_bin(&mut packed_args, prefix.as_bytes())?;
 
-        encode::write_bin(
-            &mut packed_args,
-            format!("{}{}{}", &job.id, &job.name, &job.timestamp).as_bytes(),
-        )?;
+        encode::write_bin(&mut packed_args, job.id.as_bytes())?;
+
+        encode::write_bin(&mut packed_args, job.name.as_bytes())?;
+        encode::write_bin(&mut packed_args, &job.timestamp.to_be_bytes())?;
+        encode::write_bin(&mut packed_args, &job.delay.to_be_bytes())?;
         // write the id,
 
         let json_data = serde_json::to_string(&job.data.clone())?;
@@ -107,7 +155,7 @@ impl<'s> Stripts<'s> {
         ]);
         let mut packed_json = Vec::new();
         encode::write_bin(&mut packed_json, json_data.as_bytes())?;
-
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("addJob")
@@ -116,7 +164,7 @@ impl<'s> Stripts<'s> {
             .arg(packed_args)
             .arg(json_data)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
@@ -129,13 +177,14 @@ impl<'s> Stripts<'s> {
         } else {
             "resumed".as_bytes()
         };
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("pause")
             .unwrap()
             .key(keys)
             .arg(f_ags)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
@@ -157,6 +206,7 @@ impl<'s> Stripts<'s> {
             (timestamp * 1000)
         };
         let keys = self.get_keys(&["", &current, "wait", "paused", "meta"]);
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("retry_jobs")
@@ -165,13 +215,13 @@ impl<'s> Stripts<'s> {
             .arg(count)
             .arg(timestamp)
             .arg(current)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
     pub async fn obliterate(&mut self, count: i64, force: bool) -> anyhow::Result<i64> {
         let count = if count > 0 { count } else { 1000 };
-
+        let mut connection = self.connection.get().await?;
         let keys = self.get_keys(&["meta", ""]);
         let result = self
             .commands
@@ -179,7 +229,7 @@ impl<'s> Stripts<'s> {
             .unwrap()
             .key(keys)
             .arg(count)
-            .invoke_async(&mut self.connection)
+            .invoke_async(&mut connection)
             .await?;
 
         if result == -1 {
@@ -190,14 +240,14 @@ impl<'s> Stripts<'s> {
         Ok(result)
     }
 
-    async fn move_to_active_queue<R: FromRedisValue>(
+    pub async fn move_to_active(
         &mut self,
         token: &str,
         opts: WorkerOptions,
-    ) -> anyhow::Result<R> {
+    ) -> anyhow::Result<MoveToAciveResult> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
-        let timestamp = self.generate_timestamp()?;
+        let timestamp = generate_timestamp()?;
         let lock_duration = opts.lock_duration.to_string();
         let limiter = serde_json::to_string(&opts.limiter)?;
 
@@ -215,8 +265,8 @@ impl<'s> Stripts<'s> {
         let d = &self.to_key("");
         let first_arg = self.keys.get("").unwrap_or(d);
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-
-        let result: R = self
+        let mut conn = &mut self.connection.get().await?;
+        let result: MoveToAciveResult = self
             .commands
             .get("moveToActive")
             .unwrap()
@@ -225,7 +275,7 @@ impl<'s> Stripts<'s> {
             .arg(timestamp)
             .arg(id)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
 
         Ok(result)
@@ -234,8 +284,8 @@ impl<'s> Stripts<'s> {
     #[allow(clippy::too_many_arguments)]
     async fn move_to_finished<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
-        V: Any + ToString + ToRedisArgs,
+        R: FromRedisValue + Any + Send + Sync + Clone + 'static,
+        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
@@ -246,8 +296,8 @@ impl<'s> Stripts<'s> {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
-        let timestamp = self.generate_timestamp()?;
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
+        let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
@@ -278,6 +328,7 @@ impl<'s> Stripts<'s> {
         let fetch = if fetch_next { "fetch" } else { "" };
         let d = &self.to_key("");
         let sec_last = self.keys.get("").unwrap_or(d);
+        let mut connection = &mut self.connection.get().await?;
         encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
         let result: Option<R> = self
             .commands
@@ -293,12 +344,12 @@ impl<'s> Stripts<'s> {
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
-            .invoke_async(&mut self.connection)
+            .invoke_async(connection)
             .await?;
         use std::any::{Any, TypeId};
         if let Some(res) = result {
             if TypeId::of::<i8>() == res.type_id() {
-                let n = Box::new(res) as Box<dyn Any>;
+                let n = Box::new(res.clone()) as Box<dyn Any>;
                 let n = n.downcast::<i8>().unwrap();
                 if *n < 0 {
                     self.finished_errors(*n, &job.id, "finished", "active");
@@ -306,32 +357,25 @@ impl<'s> Stripts<'s> {
             }
             // I do not like this as it is using a sideeffect
             job.finished_on = timestamp as i64;
+            let m: HashMap<String, String> = HashMap::new();
+            let expected = (Some(m), Some("".to_string()), 0_u64, Some(1_u64));
 
-            let slice_of_string = print_type_of(&vec![vec![""]]);
+            let slice_of_string = print_type_of(&expected);
 
-            if print_type_of(&res.clone()) == slice_of_string {
+            if print_type_of(&res) == slice_of_string {
                 let n = Box::new(res) as Box<dyn Any>;
-                let n = n.downcast::<Vec<Vec<&str>>>().unwrap();
+                let n = n.downcast::<MoveToAciveResult>().unwrap();
                 let v = *n;
 
-                let returned_result = self.raw_to_next_job_data(&v);
+                let returned_result = v;
 
-                return Ok(returned_result);
+                return Ok(Some(returned_result));
             }
         }
         Ok(None)
     }
 
     //create a function that generates timestamps;
-    fn generate_timestamp(&self) -> anyhow::Result<u64> {
-        use std::time::SystemTime;
-        let result = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs()
-            * 1000;
-
-        Ok(result)
-    }
 
     fn get_keep_jobs(&self, should_remove: bool) -> KeepJobs {
         if should_remove {
@@ -369,7 +413,7 @@ impl<'s> Stripts<'s> {
         }
     }
 
-    fn array_to_object(&self, arr: &[&str]) -> HashMap<String, String> {
+    fn array_to_object(&self, arr: &[String]) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for (i, v) in arr.iter().enumerate() {
             if i % 2 == 0 {
@@ -378,7 +422,7 @@ impl<'s> Stripts<'s> {
         }
         result
     }
-    fn raw_to_next_job_data(&self, mut raw: &Vec<Vec<&str>>) -> NextJobData {
+    fn raw_to_next_job_data(&self, mut raw: &Vec<Vec<String>>) -> NextJobData {
         let len = raw.len();
         if !raw.is_empty() {
             // check if the  first element is present in the array;
@@ -401,6 +445,7 @@ impl<'s> Stripts<'s> {
     ) -> anyhow::Result<u64> {
         let stalled = self.keys.get("stalled").unwrap();
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
+        let conn = &mut self.connection.get().await?;
         let result: u64 = self
             .commands
             .get("extendLock")
@@ -409,17 +454,17 @@ impl<'s> Stripts<'s> {
             .arg(token)
             .arg(duration.to_string())
             .arg(job_id)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
     }
-    async fn move_stalled_job_to_wait<R: FromRedisValue>(
+    pub async fn move_stalled_jobs_to_wait(
         &mut self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<R> {
+    ) -> anyhow::Result<Vec<Vec<String>>> {
         let stalled = self.keys.get("").unwrap();
-        let timestamp = self.generate_timestamp()?;
+        let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
             "stalled",
             "wait",
@@ -429,8 +474,9 @@ impl<'s> Stripts<'s> {
             "meta",
             "events",
         ]);
+        let conn = &mut self.connection.get().await?;
 
-        let result: R = self
+        let result = self
             .commands
             .get("moveStalledJobToWait")
             .unwrap()
@@ -439,11 +485,11 @@ impl<'s> Stripts<'s> {
             .arg(stalled)
             .arg(timestamp)
             .arg(stalled_interval)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
     }
-    async fn update_progress<P: Serialize>(
+    pub async fn update_progress<P: Serialize>(
         &mut self,
         job_id: &str,
         progress: P,
@@ -454,6 +500,7 @@ impl<'s> Stripts<'s> {
         ];
 
         let progress = serde_json::to_string(&progress)?;
+        let conn = &mut self.connection.get().await?;
         let result: Option<i8> = self
             .commands
             .get("updateProgress")
@@ -461,7 +508,7 @@ impl<'s> Stripts<'s> {
             .key(&keys)
             .arg(job_id)
             .arg(progress)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
 
         match result {
@@ -474,10 +521,10 @@ impl<'s> Stripts<'s> {
             None => Ok(None),
         }
     }
-    async fn move_to_completed<
+    pub async fn move_to_completed<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
-        V: Any + ToString + ToRedisArgs,
+        R: FromRedisValue + Send + Sync + Clone + 'static,
+        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
@@ -486,7 +533,7 @@ impl<'s> Stripts<'s> {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         self.move_to_finished(
             job,
             val,
@@ -499,18 +546,18 @@ impl<'s> Stripts<'s> {
         )
         .await
     }
-    async fn move_to_failed<
+    pub async fn move_to_failed<
         D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Copy + 'static,
+        R: FromRedisValue + Any + Send + Sync + 'static + Clone,
     >(
         &mut self,
         job: &mut Job<'s, D, R>,
-        failed_reason: &'static str,
+        failed_reason: String,
         remove_on_failure: bool,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<(NextJobData)> {
+    ) -> anyhow::Result<Option<MoveToAciveResult>> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -526,7 +573,7 @@ impl<'s> Stripts<'s> {
 
     pub async fn get_counts(&mut self, mut types: impl Iterator<Item = &str>) -> Result<Vec<i64>> {
         let keys = self.get_keys(&[""]);
-
+        let conn = &mut self.connection.get().await?;
         let transformed_types: Vec<_> = types
             .map(|t| if t == "waiting" { "wait" } else { t })
             .collect();
@@ -536,9 +583,43 @@ impl<'s> Stripts<'s> {
             .unwrap()
             .key(keys)
             .arg(transformed_types)
-            .invoke_async(&mut self.connection)
+            .invoke_async(conn)
             .await?;
         Ok(result)
+    }
+
+    pub fn movee_to_delayed_args(
+        &self,
+        job_id: &str,
+        timestamp: i64,
+        token: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        use std::cmp::max;
+        let mut max_timestamp = max(0, timestamp);
+        let int = job_id.parse::<i64>()?;
+        if timestamp > 0 {
+            max_timestamp = max_timestamp * 0x1000 + (int & 0xfff);
+        }
+        let mut keys = self.get_keys(&["wait", "active", "priority", "delayed"]);
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("paused"));
+        keys.push(self.to_key("meta"));
+
+        let current_timestamp = generate_timestamp()?;
+        let first_key = self.keys.get("").unwrap().to_owned();
+        let args = vec![
+            first_key,
+            current_timestamp.to_string(),
+            max_timestamp.to_string(),
+            job_id.to_string(),
+            token.to_string(),
+        ];
+        Ok((keys, args))
+    }
+
+    pub fn move_to_failed_args() -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        unimplemented!()
     }
 }
 
@@ -547,7 +628,8 @@ pub fn print_type_of<T>(_: &T) -> String {
 }
 
 type Map = HashMap<String, String>;
-type NextJobData = Option<(Option<Map>, Option<Map>)>;
+pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
+pub type MoveToAciveResult = (Option<Map>, Option<String>, u64, Option<u64>);
 
 // test
 
@@ -567,4 +649,14 @@ fn test_get_script() {
     let script = get_script("addJob-8.lua");
     // println!("{:?}", script);
     assert!(!script.is_empty());
+}
+
+pub fn generate_timestamp() -> anyhow::Result<u64> {
+    use std::time::SystemTime;
+    let result = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs()
+        * 1000;
+
+    Ok(result)
 }

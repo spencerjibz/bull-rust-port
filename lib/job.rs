@@ -1,9 +1,17 @@
-use std::{borrow::Borrow, clone, collections::HashMap};
-
 use super::*;
-use redis::Commands;
-use serde_json::Value;
 
+use core::num;
+use futures::{self, lock::Mutex};
+use redis::Commands;
+use redis::{FromRedisValue, RedisResult, ToRedisArgs};
+use serde::de::{value, Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+use serde::ser::{Serialize, SerializeStruct, Serializer};
+use serde_json::Value;
+use std::any::Any;
+use std::sync::Arc;
+use std::time;
+use std::{borrow::Borrow, clone, collections::HashMap};
+#[derive(Clone)]
 pub struct Job<'a, D, R> {
     pub name: &'a str,
     pub queue: &'a Queue<'a>,
@@ -11,26 +19,86 @@ pub struct Job<'a, D, R> {
     pub attempts_made: i64,
     pub attempts: i64,
     pub delay: i64,
-    pub id: String,
-    pub progress: i8, // 0 to 100
+    pub id: String,       // jsonString
+    pub progress: String, // 0 to 100
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: script::Stripts<'a>,
+    scripts: Arc<Mutex<script::Scripts<'a>>>,
     pub repeat_job_key: Option<&'a str>,
     pub failed_reason: Option<String>,
-    pub stack_trace: Vec<&'a str>,
+    pub stack_trace: Vec<String>,
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
     pub processed_on: i64,
     pub finished_on: i64,
+    pub discarded: bool,
+}
+// implement Serialize for Job
+impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Job", 15)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("queue", &self.queue.name)?;
+        state.serialize_field("timestamp", &self.timestamp)?;
+        state.serialize_field("attempts_made", &self.attempts_made)?;
+        state.serialize_field("attempts", &self.attempts)?;
+        state.serialize_field("delay", &self.delay)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("progress", &self.progress)?;
+        state.serialize_field("opts", &self.opts)?;
+        state.serialize_field("data", &self.data)?;
+        state.serialize_field("return_value", &self.return_value)?;
+        state.serialize_field("repeat_job_key", &self.repeat_job_key)?;
+        state.serialize_field("failed_reason", &self.failed_reason)?;
+        state.serialize_field("stack_trace", &self.stack_trace)?;
+        state.serialize_field("remove_on_complete", &self.remove_on_complete)?;
+        state.serialize_field("remove_on_fail", &self.remove_on_fail)?;
+        state.serialize_field("processed_on", &self.processed_on)?;
+        state.serialize_field("finished_on", &self.finished_on)?;
+        state.serialize_field("discarded", &self.discarded)?;
+        state.end()
+    }
 }
 
-impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Serialize>
-    Job<'a, D, R>
+// implement Deserialize for Job
+
+//implement PartialEq for Job
+impl<
+        'a,
+        D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone + 'static,
+    > PartialEq for Job<'a, D, R>
 {
-    fn update_progress(&mut self, progress: i8) {
-        self.progress = progress;
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<
+        'a,
+        D: Deserialize<'a> + Serialize + Clone + Send + Sync,
+        R: Deserialize<'a>
+            + Serialize
+            + Send
+            + Sync
+            + FromRedisValue
+            + Clone
+            + 'static
+            + std::fmt::Debug,
+    > Job<'a, D, R>
+{
+    async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
+        self.progress = serde_json::to_string(&progress).unwrap();
+        self.scripts
+            .lock()
+            .await
+            .update_progress(&self.id, progress)
+            .await
+
         // return a script to update the progress;
     }
 
@@ -42,19 +110,20 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
     ) -> anyhow::Result<Job<'a, D, R>> {
         let prefix = queue.prefix;
         let queue_name = queue.name;
-        let dup_conn = queue.manager.pool.get().await?;
+        let dup_conn = queue.manager.pool.clone();
+        let conn_str = queue.manager.to_conn_string();
 
         Ok(Self {
             opts: opts.clone(),
             queue,
             name,
             id: opts.job_id.unwrap(),
-            progress: 0,
+            progress: String::default(),
             timestamp: opts.timestamp.unwrap(),
             delay: opts.delay,
             attempts_made: 0,
             attempts: opts.attempts,
-            data: data.clone(),
+            data,
             return_value: None,
             remove_on_complete: opts.remove_on_complete,
             processed_on: 0,
@@ -63,7 +132,8 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: script::Stripts::<'a>::new(prefix, queue_name, dup_conn),
+            scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
+            discarded: false,
         })
     }
 
@@ -73,8 +143,9 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
         job_id: &'a str,
     ) -> anyhow::Result<Job<'a, D, R>> {
         // use serde_json to convert to job;
+        //println!("raw_string: {:?}", raw_string);
 
-        let json = JobJsonRaw::fromStr(to_static_str(raw_string))?;
+        let json = JobJsonRaw::fromStr(raw_string)?;
 
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
@@ -82,15 +153,16 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
         let d = json.data;
         let data = serde_json::from_str::<D>(d)?;
 
-        //let  return_value = serde_json::from_str::<R>(json.return_value)?;
-
         let mut job = Self::new(name, queue, data, opts).await?;
         job.id = job_id.to_string();
-        job.progress = json.progress.parse::<i8>().unwrap_or(0);
+        job.progress = json.progress.to_string();
         job.attempts_made = json.attempts_made.parse::<i64>().unwrap_or_default();
         job.timestamp = json.timestamp.parse::<i64>()?;
         job.delay = json.delay.parse::<i64>()?;
-        //
+        if !json.return_value.is_empty() {
+            let return_value = serde_json::from_str::<R>(json.return_value)?;
+            job.return_value = Some(return_value);
+        }
         job.finished_on = json
             .finished_on
             .unwrap_or(&String::from("0"))
@@ -102,6 +174,7 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
         job.failed_reason = Some(json.failed_reason.to_string());
 
         job.repeat_job_key = json.rjk;
+
         job.stack_trace = json.stack_trace;
 
         Ok(job)
@@ -124,13 +197,152 @@ impl<'a, D: Deserialize<'a> + Clone + std::fmt::Debug, R: Deserialize<'a> + Seri
         let job = Self::from_json(queue, raw_string, job_id).await?;
         Ok(job)
     }
+    pub async fn move_to_failed(
+        &mut self,
+        err: String,
+        token: &str,
+        fetch_next: bool,
+    ) -> anyhow::Result<()> {
+        self.failed_reason = Some(err.clone());
+        let mut move_to_failed = false;
+
+        let mut finished_on = 0;
+        let mut command = "moveToFailed";
+        let mut conn = self.queue.manager.pool.clone().get().await?;
+        self.save_to_stacktrace(&mut conn, err.clone()).await?;
+        let backoff_s = BackOff::new();
+
+        if self.attempts_made < self.opts.attempts && !self.discarded {
+            let backoff = BackOff::normalize(self.opts.backoff.clone());
+            let custom_strategy = if let Some(q) = self.queue.opts.settings.backoff_strategy.clone()
+            {
+                Arc::into_inner(q)
+            } else {
+                None
+            };
+
+            let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy)?;
+            if let Some(num) = delay {
+                if num == -1 {
+                    move_to_failed = true;
+                }
+                let timestamp = generate_timestamp()?;
+                let (keys, args) = self.scripts.lock().await.movee_to_delayed_args(
+                    &self.id,
+                    timestamp as i64 + num,
+                    token,
+                )?;
+                self.scripts
+                    .lock()
+                    .await
+                    .commands
+                    .get("moveToDelayed")
+                    .unwrap()
+                    .key(keys)
+                    .arg(args)
+                    .invoke_async::<_, ()>(&mut conn)
+                    .await?;
+                command = "delayed";
+            } else {
+                let (keys, args) =
+                    self.scripts
+                        .lock()
+                        .await
+                        .retry_jobs_args(&self.id, self.opts.lifo, token)?;
+                self.scripts
+                    .lock()
+                    .await
+                    .commands
+                    .get("retryJobs")
+                    .unwrap()
+                    .key(keys)
+                    .arg(args)
+                    .invoke_async::<_, ()>(&mut conn)
+                    .await?;
+                command = "retryJob";
+            }
+        }
+        move_to_failed = true;
+
+        if move_to_failed {
+            let worker_opts = WorkerOptions::default();
+
+            let err_message = err.clone();
+            let mut job = self.clone();
+            let remove_onfail = self.opts.remove_on_fail.bool;
+            let result = job
+                .scripts
+                .lock()
+                .await
+                .move_to_failed(
+                    self,
+                    err_message,
+                    remove_onfail,
+                    token,
+                    &worker_opts,
+                    fetch_next,
+                )
+                .await?;
+
+            finished_on = generate_timestamp()?;
+        }
+        if finished_on > 0 {
+            self.finished_on = finished_on as i64;
+        }
+
+        Ok(())
+    }
+
+    pub async fn save_to_stacktrace(
+        &mut self,
+        conn: &mut Connection,
+        err_stack: String,
+    ) -> anyhow::Result<()> {
+        if !err_stack.is_empty() {
+            self.stack_trace.push(err_stack.clone());
+            if let Some(limit) = self.opts.stacktrace_limit {
+                if self.stack_trace.len() > limit {
+                    self.stack_trace = self.stack_trace[0..limit].to_vec();
+                }
+            }
+            let stack_trace = serde_json::to_string(&self.stack_trace)?;
+            let (keys, args) =
+                self.scripts
+                    .lock()
+                    .await
+                    .save_stacktrace_args(&self.id, &stack_trace, &err_stack);
+
+            self.scripts
+                .lock()
+                .await
+                .commands
+                .get("saveStacktrace")
+                .unwrap()
+                .key(keys)
+                .arg(args)
+                .invoke_async(conn)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub fn to_string(&self) -> anyhow::Result<String> {
+        let string = serde_json::to_string(&self)?;
+        Ok(string)
+    }
+    pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, self)?;
+
+        Ok(())
+    }
 }
 
 // implement fmt::Debug for Job;
 impl<
         'a,
         D: Deserialize<'a> + Clone + Serialize + std::fmt::Debug,
-        R: Deserialize<'a> + Serialize,
+        R: Deserialize<'a> + Serialize + std::fmt::Debug,
     > std::fmt::Debug for Job<'a, D, R>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -153,6 +365,8 @@ impl<
             .field("remove_on_fail", &self.remove_on_fail)
             .field("processed_on", &self.processed_on)
             .field("finished_on", &self.finished_on)
+            .field("discarded", &self.discarded)
+            .field("return_value", &self.return_value)
             .finish()
     }
 }
@@ -173,72 +387,25 @@ pub struct Data {
     #[serde(rename = "trackingID")]
     pub tracking_id: String,
 }
+use derive_redis_json::RedisJsonValue;
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, RedisJsonValue)]
+pub struct ReturnedData {
+    pub status: String,
+    pub count: f32,
+    #[serde(rename = "socketId")]
+    pub socket_id: String,
+    pub cid: String,
+    #[serde(rename = "fileID")]
+    pub file_id: String,
+    pub sizes: Vec<Size>,
+    #[serde(rename = "userID")]
+    pub user_id: String,
+    #[serde(rename = "trackingID")]
+    pub tracking_id: String,
+}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Size {
     pub width: i64,
     pub height: i64,
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dotenv_codegen::dotenv;
-    use std::collections::HashMap;
-    use std::env;
-    use std::fs::File;
-    use std::time::{Instant, SystemTime};
-    const PASS: &str = dotenv!("REDIS_PASSWORD");
-
-    #[test]
-    fn creating_a_new_job() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut config = HashMap::new();
-            config.insert("password", PASS);
-
-            let redis_opts = RedisOpts::Config(config);
-
-            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None })
-                .await
-                .unwrap();
-            let job = Job::<'_, String, String>::new(
-                "test",
-                &queue,
-                "test".to_string(),
-                JobOptions::default(),
-            )
-            .await
-            .unwrap();
-            println!("{:#?}", queue);
-            assert_eq!(job.name, "test");
-        });
-    }
-    #[test]
-    fn create_job_from_string() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut config = HashMap::new();
-            config.insert("password", PASS);
-
-            let redis_opts = RedisOpts::Config(config);
-
-            let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions { prefix: None })
-                .await
-                .unwrap();
-
-            let result: HashMap<String, String> =
-                queue.client.hgetall("bull:pinningQueue:172").await.unwrap();
-            //let json = JobJsonRaw::from_map(result)?;
-            //json.save_to_file("test.json")?;
-
-            // println!("{:#?}", worker.clone());
-            let contents = serde_json::to_string(&result).unwrap_or("{}".to_string());
-
-            let job = Job::<Data, String>::from_json(&queue, contents, "172")
-                .await
-                .unwrap();
-            //println!("{:#?}", job);
-            assert_eq!(job.name, "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP");
-        });
-    }
 }

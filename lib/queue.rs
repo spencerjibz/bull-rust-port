@@ -1,7 +1,7 @@
 use crate::job::Job;
+use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
 use crate::redis_connection::{Client, RedisConnection, RedisOpts};
 use crate::script;
-use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
 use anyhow::Ok;
 use deadpool_redis::{Connection, Pool, Runtime};
 use futures::future::ok;
@@ -10,17 +10,17 @@ use std::collections::HashMap;
 use std::future::Future;
 pub type ListenerCallback<T> = dyn FnMut(T) -> (dyn Future<Output = ()> + Send + Sync + 'static);
 use crate::RedisConnectionTrait;
+use futures::lock::Mutex;
 use redis::streams::StreamMaxlen;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
 
 pub struct Queue<'c> {
     pub prefix: &'c str,
     pub name: &'c str,
     pub client: Connection,
     pub opts: QueueOptions<'c>,
-    pub scripts: RefCell<script::Stripts<'c>>,
+    pub scripts: Mutex<script::Scripts<'c>>,
     pub manager: RedisConnection<'c>,
 }
 
@@ -34,21 +34,29 @@ impl<'c> Queue<'c> {
 
         let new_connection = RedisConnection::init(redis_opts.clone()).await?;
         let last_connection = RedisConnection::init(redis_opts.clone()).await?;
-        let connection = RedisConnection::init(redis_opts).await?;
-        let scripts = script::Stripts::new(prefix, name, connection.conn);
+        let connection = RedisConnection::init(redis_opts.clone()).await?;
+        let conn_str = redis_opts.to_conn_string();
+        let scripts = script::Scripts::new(prefix, name, connection.pool);
 
         Ok(Self {
             prefix,
             name,
             opts: queue_opts,
-            scripts: RefCell::new(scripts),
+            scripts: Mutex::new(scripts),
             client: new_connection.conn,
             manager: last_connection,
         })
     }
     pub async fn add<
         D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static + std::fmt::Debug,
-        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
+        R: Deserialize<'c>
+            + Serialize
+            + FromRedisValue
+            + Send
+            + Sync
+            + 'static
+            + Clone
+            + std::fmt::Debug,
     >(
         &'c self,
         name: &'static str,
@@ -56,7 +64,8 @@ impl<'c> Queue<'c> {
         opts: JobOptions,
     ) -> anyhow::Result<Job<D, R>> {
         let mut job = Job::<D, R>::new(name, self, data, opts).await?;
-        let job_id = self.scripts.borrow_mut().add_job(&job).await?;
+        let mut scripts = self.scripts.lock().await;
+        let job_id = scripts.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
 
         Ok(job)
@@ -65,12 +74,12 @@ impl<'c> Queue<'c> {
     pub async fn pause<R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static>(
         &'c self,
     ) -> anyhow::Result<R> {
-        let result = self.scripts.borrow_mut().pause(true).await?;
+        let result = self.scripts.lock().await.pause(true).await?;
 
         Ok(result)
     }
     pub async fn resume<R: FromRedisValue>(&'c self) -> anyhow::Result<R> {
-        let result = self.scripts.borrow_mut().pause(false).await?;
+        let result = self.scripts.lock().await.pause(false).await?;
 
         Ok(result)
     }
@@ -86,7 +95,7 @@ impl<'c> Queue<'c> {
     async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
         self.pause().await?;
         loop {
-            let cursor = self.scripts.borrow_mut().obliterate(1000, force).await?;
+            let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
             if cursor == 0 {
                 break;
             }
@@ -98,7 +107,8 @@ impl<'c> Queue<'c> {
         loop {
             let cursor = self
                 .scripts
-                .borrow_mut()
+                .lock()
+                .await
                 .retry_jobs::<i64>(opts.state.clone(), opts.count, opts.timestamp)
                 .await?;
             if cursor == 0 {
@@ -128,7 +138,8 @@ impl<'c> Queue<'c> {
         let cloned_types = current_types.clone();
         let resources = self
             .scripts
-            .borrow_mut()
+            .lock()
+            .await
             .get_counts(cloned_types.into_iter())
             .await?;
 
@@ -167,7 +178,6 @@ impl<'c> Queue<'c> {
     }
 }
 
-// implement fmt::Debug for Queue
 use std::fmt;
 impl fmt::Debug for Queue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

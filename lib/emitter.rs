@@ -1,19 +1,22 @@
 use crate::*;
-use bincode;
+use bincode::{self, de};
 use std::{collections::HashMap, sync::Arc};
+
 use tokio::task::{self, JoinHandle};
 
 use futures::future::{BoxFuture, Future, FutureExt};
 use uuid::Uuid;
 
-type AsyncCB = dyn Fn(Vec<u8>) -> BoxFuture<'static, ()> + Send + Sync + 'static;
+pub type AsyncCB = dyn Fn(Vec<u8>) -> BoxFuture<'static, ()> + Send + Sync + 'static;
+
+#[derive(Clone)]
 pub struct AsyncListener {
     callback: Arc<AsyncCB>,
     limit: Option<u64>,
     id: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AsyncEventEmitter {
     pub listeners: HashMap<String, Vec<AsyncListener>>,
 }
@@ -23,9 +26,9 @@ impl AsyncEventEmitter {
         Self::default()
     }
 
-    pub async fn emit<T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
+    pub async fn emit<'a, T>(&mut self, event: &str, value: T) -> anyhow::Result<()>
     where
-        T: Serialize + Deserialize<'static> + Send + Sync + 'static + std::fmt::Debug,
+        T: Serialize + Deserialize<'a> + Send + Sync + 'a + std::fmt::Debug,
     {
         let mut callback_handlers: Vec<_> = Vec::new();
 
@@ -81,16 +84,17 @@ impl AsyncEventEmitter {
         None
     }
 
-    pub async fn on_limited<F, T>(&mut self, event: &str, limit: Option<u64>, callback: F) -> String
+    fn on_limited<F, T, C>(&mut self, event: &str, limit: Option<u64>, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         let id = Uuid::new_v4().to_string();
         let parsed_callback = move |bytes: Vec<u8>| {
             let value: T = bincode::deserialize(&bytes).unwrap();
 
-            callback(value)
+            callback(value).boxed()
         };
 
         let listener = AsyncListener {
@@ -110,24 +114,26 @@ impl AsyncEventEmitter {
 
         id
     }
-    pub async fn once<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.on_limited(event, Some(1), callback).await
+        self.on_limited(event, Some(1), callback)
     }
-    pub async fn on<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.on_limited(event, None, callback).await
+        self.on_limited(event, None, callback)
     }
 }
 
 // test the AsyncEventEmitter
-// implment fmt::Debug for AsyncEventListener
+// implement fmt::Debug for AsyncEventListener
 use std::fmt;
 impl fmt::Debug for AsyncListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -149,38 +155,137 @@ impl fmt::Debug for AsyncEventEmitter {
 #[cfg(test)]
 
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use bincode::{options, DefaultOptions};
     use tokio::test;
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct Date {
+        month: String,
+        day: String,
+    }
+    #[derive(Serialize, Deserialize, Debug)]
+    struct Time {
+        hour: String,
+        minute: String,
+    }
+    #[derive(Serialize, Deserialize, Debug)]
+    struct DateTime(Date, Time);
+
     #[tokio::test]
+
     async fn test_async_event() {
         let mut event_emitter = AsyncEventEmitter::new();
 
-        #[derive(Serialize, Deserialize, Debug)]
-        struct Date {
-            month: String,
-            day: String,
-        }
+        let date = Date {
+            month: "January".to_string(),
+            day: "Tuesday".to_string(),
+        };
 
-        event_emitter
-            .on("LOG_DATE", |date: Date| {
-                async move { println!("{:#?}", date) }.boxed()
-            })
-            .await;
-        event_emitter
-            .on("LOG_DATE", |date: Date| {
-                async move { println!("{:#?}", date.month) }.boxed()
-            })
-            .await;
+        event_emitter.on("LOG_DATE", |date: Date| {
+            async move { /*Do something here */ }
+        });
+
+        event_emitter.on("LOG_DATE", |date: Date| async move {
+            println!(" emitted data: {:#?}", date)
+        });
+        event_emitter.emit("LOG_DATE", date).await;
+        println!("{:#?}", event_emitter);
+        assert!(event_emitter.listeners.get("LOG_DATE").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_emit_multiple_args() -> anyhow::Result<()> {
+        let mut event_emitter = AsyncEventEmitter::new();
+        let name = "LOG_DATE".to_string();
+        event_emitter.on("LOG_DATE", |tup: (Date, String)| async move {
+            println!("{:#?}", tup)
+        });
+
         event_emitter
             .emit(
                 "LOG_DATE",
-                Date {
-                    month: "January".to_string(),
-                    day: "Tuesday".to_string(),
-                },
+                (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name,
+                ),
             )
             .await;
 
         println!("{:?}", event_emitter.listeners);
+        Ok(())
     }
+
+    #[tokio::test]
+    async fn bincode_encode_test() -> anyhow::Result<()> {
+        let example = DateTime(
+            Date {
+                month: "January".to_string(),
+                day: "Tuesday".to_string(),
+            },
+            Time {
+                hour: "12".to_string(),
+                minute: "30".to_string(),
+            },
+        );
+        let encoded: Vec<u8> = bincode::serialize(&example)?;
+        let decoded: (Date, Time) = bincode::deserialize(&encoded)?;
+        #[derive(Serialize, Deserialize, Debug)]
+        struct DateTimeContainer {
+            data: RefCell<DateTime>,
+        }
+
+        let mut container = DateTimeContainer {
+            data: RefCell::new(example),
+        };
+
+        println!("{:#?}", container.data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listens_once_with_multiple_emits() {
+        let mut event_emitter = AsyncEventEmitter::new();
+        let name = "LOG_DATE".to_string();
+        let listener_id = event_emitter.once("LOG_DATE", |tup: (Date, String)| async move {
+            println!("{:#?}", tup)
+        });
+
+        event_emitter
+            .emit(
+                "LOG_DATE",
+                (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name.clone(),
+                ),
+            )
+            .await;
+        event_emitter
+            .emit(
+                "LOG_DATE",
+                (
+                    Date {
+                        month: "January".to_string(),
+                        day: "Tuesday".to_string(),
+                    },
+                    name,
+                ),
+            )
+            .await;
+
+        assert_eq!(event_emitter.listeners.len(), 1);
+        if let Some(event) = event_emitter.listeners.get("LOG_DATE") {
+            println!("{:?}", event)
+        }
+    }
+    #[tokio::test]
+    async fn remove_listeners() {}
 }

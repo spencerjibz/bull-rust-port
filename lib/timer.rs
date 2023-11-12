@@ -1,76 +1,79 @@
-use std::future::Future;
+use crate::emitter::AsyncCB;
+use crate::*;
+use bincode;
+use futures::future::{BoxFuture, Future, FutureExt};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{sleep, Instant};
-pub type Callback<T, R> = dyn FnMut(T) -> (dyn Future<Output = R>) + Sync + Send + 'static;
-use crate::*;
-pub struct Timer<F> {
+use tokio::{
+    task::{self, JoinHandle},
+    time::{sleep, Instant},
+};
+pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
+
+#[derive(Clone)]
+pub struct Timer {
     interval: Duration,
-    callback: F,
+    callback: Arc<EmptyCb>,
+    task: Option<Arc<JoinHandle<()>>>,
     _ok: bool,
 }
 
-impl<F> Timer<F> {
-    pub fn new<A, R, Fut>(delay: u64, cb: F) -> Self
+impl Timer {
+    pub fn new<F>(delay_secs: u64, cb: F) -> Self
     where
-        F: Fn(A) -> Fut + Send + Sync + 'static,
-        A: Send + Sync + 'static,
-
-        Fut: Future<Output = R> + 'static,
-        R: Serialize + Deserialize<'static> + Send + Sync + 'static,
+        F: Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
-        let interval = Duration::from_secs(delay);
+        let interval = Duration::from_secs(delay_secs);
+        #[allow(clippy::redundant_closure)]
+        let parsed_cb = move || cb();
         Self {
             interval,
-            callback: cb,
+            callback: Arc::new(parsed_cb),
+            task: None,
             _ok: true,
         }
     }
-    pub async fn run<A, Fut, R>(&mut self, args: A) -> Option<R>
-    where
-        F: FnMut(A) -> Fut,
-        A: Send + Sync + 'static + Clone,
-        Fut: Future<Output = R> + 'static,
-        R: Serialize + Deserialize<'static> + Send + Sync + 'static,
-    {
-        //
-        if self._ok {
-            sleep(self.interval).await;
-            let now = Instant::now();
-            let res = (self.callback)(args.clone());
-            let v = res.await;
 
-            return Some(v);
-        }
-        None
+    pub fn run(&mut self) {
+        let mut interval = tokio::time::interval(self.interval);
+        let callback = Arc::clone(&self.callback);
+        let mut _ok = self._ok;
+        let mut task = task::spawn(async move {
+            loop {
+                interval.tick().await;
+
+                callback().await;
+            }
+        });
+        self.task = Some(Arc::new(task));
     }
 
     pub fn stop(&mut self) {
-        self._ok = false;
-        let _ = *self;
-        //  self._task.abort();
+        match &self.task {
+            Some(task) => {
+                self._ok = false;
+                task.abort();
+                self.task = None;
+            }
+            None => {} //  self._task.abort();
+        }
     }
 }
 
 // write a test for this
 #[cfg(test)]
-mod tests  {
+mod tests {
     use super::*;
     #[tokio::test]
-    async fn return_result() {
-        let mut timer = Timer::new(1, |x| async move { x + 1 });
+    async fn runs_and_stops() {
         let mut x = 0;
-        let res = timer.run(x).await;
-        //assert_eq!(x, 1);
-        assert_eq!(res, Some(1));
-    }
+        let mut timer = Timer::new(1, || async move { println!("hello") }.boxed());
 
-    #[tokio::test]
-    async fn should_stop() {
-        let mut timer = Timer::new(1, |x| async move { x + 1 });
-        let mut x = 0;
+        timer.run();
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
         timer.stop();
-        let res = timer.run(x).await;
-        assert_eq!(res, None);
+
+        assert!(!timer._ok);
     }
 }
