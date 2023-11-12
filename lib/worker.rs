@@ -367,17 +367,19 @@ impl<
         self.connection.close();
     }
 
-    pub fn on<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on(event, callback)
     }
-    pub fn once<F, T>(&mut self, event: &str, callback: F) -> String
+    pub fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        F: Fn(T) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        C: Fn(T) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.once(event, callback)
     }
