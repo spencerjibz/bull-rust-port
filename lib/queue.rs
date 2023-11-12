@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::future::Future;
 pub type ListenerCallback<T> = dyn FnMut(T) -> (dyn Future<Output = ()> + Send + Sync + 'static);
 use crate::RedisConnectionTrait;
+use futures::lock::Mutex;
 use redis::streams::StreamMaxlen;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use futures::lock::Mutex;
 
 pub struct Queue<'c> {
     pub prefix: &'c str,
@@ -49,7 +49,14 @@ impl<'c> Queue<'c> {
     }
     pub async fn add<
         D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static + std::fmt::Debug,
-        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static + Copy + std::fmt::Debug,
+        R: Deserialize<'c>
+            + Serialize
+            + FromRedisValue
+            + Send
+            + Sync
+            + 'static
+            + Clone
+            + std::fmt::Debug,
     >(
         &'c self,
         name: &'static str,
@@ -58,7 +65,7 @@ impl<'c> Queue<'c> {
     ) -> anyhow::Result<Job<D, R>> {
         let mut job = Job::<D, R>::new(name, self, data, opts).await?;
         let mut scripts = self.scripts.lock().await;
-        let job_id =scripts.add_job(&job).await?;
+        let job_id = scripts.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
 
         Ok(job)
@@ -68,7 +75,6 @@ impl<'c> Queue<'c> {
         &'c self,
     ) -> anyhow::Result<R> {
         let result = self.scripts.lock().await.pause(true).await?;
-        
 
         Ok(result)
     }
@@ -101,7 +107,8 @@ impl<'c> Queue<'c> {
         loop {
             let cursor = self
                 .scripts
-                .lock().await
+                .lock()
+                .await
                 .retry_jobs::<i64>(opts.state.clone(), opts.count, opts.timestamp)
                 .await?;
             if cursor == 0 {
@@ -131,7 +138,8 @@ impl<'c> Queue<'c> {
         let cloned_types = current_types.clone();
         let resources = self
             .scripts
-            .lock().await
+            .lock()
+            .await
             .get_counts(cloned_types.into_iter())
             .await?;
 
