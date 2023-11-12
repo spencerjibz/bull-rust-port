@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("finished_on: {:#?}", finished_on);
     println!("processed_on: {:#?}", processed_on);
-    let datetime: DateTime<Utc> = DateTime::from_utc(date.unwrap(), Utc);
+    let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(date.unwrap(), Utc);
 
     // Format the datetime how you want
     let newdate = datetime.format("%Y-%m-%d %H:%M:%S");
