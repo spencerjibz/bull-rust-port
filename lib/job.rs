@@ -8,6 +8,7 @@ use serde::de::{value, Deserialize, Deserializer, Error, MapAccess, SeqAccess, V
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 use std::any::Any;
+use std::fmt::format;
 use std::sync::Arc;
 use std::time;
 use std::{borrow::Borrow, clone, collections::HashMap};
@@ -33,6 +34,7 @@ pub struct Job<'a, D, R> {
     pub processed_on: i64,
     pub finished_on: i64,
     pub discarded: bool,
+    pub parent_key: String,
 }
 // implement Serialize for Job
 impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
@@ -112,12 +114,13 @@ impl<
         let queue_name = queue.name;
         let dup_conn = queue.manager.pool.clone();
         let conn_str = queue.manager.to_conn_string();
+        let mut opts = opts.clone();
 
         Ok(Self {
             opts: opts.clone(),
             queue,
             name,
-            id: opts.job_id.unwrap(),
+            id: opts.job_id.take().unwrap(),
             progress: String::default(),
             timestamp: opts.timestamp.unwrap(),
             delay: opts.delay,
@@ -133,6 +136,7 @@ impl<
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
             scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
+            parent_key: format!("{}:{}:{}", queue.prefix, queue.name, opts.job_id.unwrap()),
             discarded: false,
         })
     }

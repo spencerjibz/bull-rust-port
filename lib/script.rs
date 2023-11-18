@@ -126,6 +126,7 @@ impl<'s> Scripts<'s> {
         &mut self,
         job: &Job<'s, D, R>,
     ) -> anyhow::Result<R> {
+        use rmpv::{self, Value};
         let e = String::from("");
         let prefix = self.keys.get("").unwrap_or(&e);
         let mut packed_args = Vec::new();
@@ -135,9 +136,9 @@ impl<'s> Scripts<'s> {
 
         encode::write_str(&mut packed_args, job.name)?;
         encode::write_i64(&mut packed_args, job.timestamp)?;
-        encode::write_i64(&mut packed_args, job.delay)?;
-        // write the id,
-
+        // add the parentKey
+        encode::write_str(&mut packed_args, &job.parent_key)?;
+        
         let json_data = serde_json::to_string(&job.data.clone())?;
         let packed_opts: Vec<u8> = rmp_serde::encode::to_vec(&job.opts)?;
 
