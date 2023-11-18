@@ -27,9 +27,16 @@ mod tests {
         let queue = QUEUE.force().await;
         println!("{:#?}", queue);
 
-        let _job: Job<'_, String, String> = queue
-            .add("test", "12".to_string(), JobOptions::default())
-            .await?;
+        let data = Data {
+            socket_id: "w3ess2".to_ascii_lowercase(),
+            cid: "Qufaufsduafsudafusaufusdaf".to_ascii_lowercase(),
+            file_id: "".to_owned(),
+            sizes: vec![],
+            user_id: "123".to_owned(),
+            tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
+        };
+
+        let _job: Job<'_, Data, String> = queue.add("test", data, JobOptions::default()).await?;
 
         Ok(())
     }
