@@ -129,20 +129,18 @@ impl<'s> Scripts<'s> {
         let e = String::from("");
         let prefix = self.keys.get("").unwrap_or(&e);
         let mut packed_args = Vec::new();
-        encode::write_bin(&mut packed_args, prefix.as_bytes())?;
+        encode::write_str(&mut packed_args, prefix)?;
 
-        encode::write_bin(&mut packed_args, job.id.as_bytes())?;
+        encode::write_str(&mut packed_args, &job.id)?;
 
-        encode::write_bin(&mut packed_args, job.name.as_bytes())?;
-        encode::write_bin(&mut packed_args, &job.timestamp.to_be_bytes())?;
-        encode::write_bin(&mut packed_args, &job.delay.to_be_bytes())?;
+        encode::write_str(&mut packed_args, job.name)?;
+        encode::write_i64(&mut packed_args, job.timestamp)?;
+        encode::write_i64(&mut packed_args, job.delay)?;
         // write the id,
 
         let json_data = serde_json::to_string(&job.data.clone())?;
-        let mut packed_opts = Vec::new();
-        let opts = format!("{:?}", job.opts);
-        let j_opts = opts.as_bytes();
-        encode::write_bin(&mut packed_opts, j_opts)?;
+        let packed_opts: Vec<u8> = rmp_serde::encode::to_vec(&job.opts)?;
+
         let keys = self.get_keys(&[
             "wait",
             "paused",
@@ -155,6 +153,8 @@ impl<'s> Scripts<'s> {
         ]);
         let mut packed_json = Vec::new();
         encode::write_bin(&mut packed_json, json_data.as_bytes())?;
+
+        println!(" keys {keys:?} = args[1] = {packed_args:?}  args[2] = {json_data:?} args[3] = {packed_opts:?}" );
         let mut conn = self.connection.get().await?;
         let result = self
             .commands
