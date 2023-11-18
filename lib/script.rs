@@ -136,9 +136,9 @@ impl<'s> Scripts<'s> {
 
         encode::write_str(&mut packed_args, job.name)?;
         encode::write_i64(&mut packed_args, job.timestamp)?;
-        // add the parentKey
-        encode::write_str(&mut packed_args, &job.parent_key)?;
-        
+        // add withchildrenKey -> lua script args[1][6];
+
+        rmpv::encode::write_value(&mut packed_args, &Value::Nil)?;
         let json_data = serde_json::to_string(&job.data.clone())?;
         let packed_opts: Vec<u8> = rmp_serde::encode::to_vec(&job.opts)?;
 

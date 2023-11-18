@@ -62,6 +62,7 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
         state.serialize_field("processed_on", &self.processed_on)?;
         state.serialize_field("finished_on", &self.finished_on)?;
         state.serialize_field("discarded", &self.discarded)?;
+        state.serialize_field("parent_key", &self.parent_key)?;
         state.end()
     }
 }

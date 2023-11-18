@@ -26,6 +26,7 @@ mod tests {
     async fn add_job_to_queue() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
         println!("{:#?}", queue);
+    
 
         let data = Data {
             socket_id: "w3ess2".to_ascii_lowercase(),
