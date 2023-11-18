@@ -34,7 +34,8 @@ pub struct Job<'a, D, R> {
     pub processed_on: i64,
     pub finished_on: i64,
     pub discarded: bool,
-    pub parent_key: String,
+    pub parent_key: Option<String>,
+    pub parent: Option<Parent>,
 }
 // implement Serialize for Job
 impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
@@ -63,6 +64,7 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
         state.serialize_field("finished_on", &self.finished_on)?;
         state.serialize_field("discarded", &self.discarded)?;
         state.serialize_field("parent_key", &self.parent_key)?;
+        state.serialize_field("parent", &self.parent)?;
         state.end()
     }
 }
@@ -115,13 +117,18 @@ impl<
         let queue_name = queue.name;
         let dup_conn = queue.manager.pool.clone();
         let conn_str = queue.manager.to_conn_string();
-        let mut opts = opts.clone();
+        let mut opt = opts.clone();
+
+        let parent = opts.parent;
+
+        let parent_key = parent.clone().map(|v| format!("{}:{}", &v.queue, &v.id));
+        let id = opts.job_id.unwrap();
 
         Ok(Self {
-            opts: opts.clone(),
+            opts: opt,
             queue,
             name,
-            id: opts.job_id.take().unwrap(),
+            id,
             progress: String::default(),
             timestamp: opts.timestamp.unwrap(),
             delay: opts.delay,
@@ -137,8 +144,9 @@ impl<
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
             scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
-            parent_key: format!("{}:{}:{}", queue.prefix, queue.name, opts.job_id.unwrap()),
+            parent_key,
             discarded: false,
+            parent,
         })
     }
 
@@ -181,6 +189,18 @@ impl<
         job.repeat_job_key = json.rjk;
 
         job.stack_trace = json.stack_trace;
+
+        job.parent = None;
+        job.parent_key = None;
+
+        if let Some(value) = json.parent {
+            let parent: Parent = serde_json::from_str(value)?;
+
+            let parent_key = format!("{}:{}", parent.queue, parent.id);
+
+            job.parent = Some(parent);
+            job.parent_key = Some(parent_key);
+        }
 
         Ok(job)
     }
@@ -372,6 +392,8 @@ impl<
             .field("finished_on", &self.finished_on)
             .field("discarded", &self.discarded)
             .field("return_value", &self.return_value)
+            .field("parent", &self.parent)
+            .field("parent_key", &self.parent_key)
             .finish()
     }
 }
