@@ -141,7 +141,7 @@ mod tests {
     #[tokio::test]
 
 
-    
+
     #[ignore]
      async fn trim_events_manually() -> anyhow::Result<()> {
            let queue = QUEUE.force().await;
@@ -151,9 +151,9 @@ mod tests {
 
               // add multiple jobs
 
-            let job1:Job<'_, String, String> = queue.add("test", "1".to_ascii_lowercase(), job_opts.clone()).await?;
-            let job2:Job<'_, String, String> = queue.add("test", "2".to_ascii_lowercase(), job_opts.clone()).await?;
-            let job3:Job<'_, String, String> = queue.add("test", "3".to_ascii_lowercase(), job_opts).await?;
+            let _job1:Job<'_, String, String> = queue.add("test", "1".to_ascii_lowercase(), job_opts.clone()).await?;
+            let _job2:Job<'_, String, String> = queue.add("test", "2".to_ascii_lowercase(), job_opts.clone()).await?;
+            let _job3:Job<'_, String, String> = queue.add("test", "3".to_ascii_lowercase(), job_opts).await?;
   
             let events_length:isize = redis::cmd("XLEN")
                 .arg("bull:test:events")
