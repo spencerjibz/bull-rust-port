@@ -209,18 +209,25 @@ impl<
         Ok(opts)
     }
 
-    pub async fn from_id(
-        queue: &'a mut Queue<'a>,
-        job_id: &'a str,
-    ) -> anyhow::Result<Job<'a, D, R>> {
+    pub async fn from_id<'c>(
+        queue: &'a  Queue<'a>,
+        job_id: &'c str,
+       
+    ) -> anyhow::Result<Option<Job<'a, D, R>>> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
+        let mut conn = queue.manager.pool.clone().get().await?;
 
-        let raw_data: HashMap<String, String> = queue.client.hgetall(key).await?;
+        let raw_data: HashMap<String, String> = redis::Cmd::hgetall(key).query_async(&mut conn).await?;
+
+        if raw_data.is_empty() {
+            return Ok(None);
+        }
+
         let raw_string = serde_json::to_string(&raw_data)?;
-
-        let job = Self::from_json(queue, raw_string, job_id).await?;
-        Ok(job)
+        let id = to_static_str(job_id.to_string());
+        let job = Self::from_json(queue, raw_string, id).await?;
+        Ok(Some(job))
     }
     pub async fn move_to_failed(
         &mut self,
