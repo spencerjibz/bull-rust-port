@@ -84,11 +84,12 @@ impl<'c> Queue<'c> {
         Ok(result)
     }
 
-    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&mut self) -> anyhow::Result<RV> {
+    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&self) -> anyhow::Result<RV> {
         let b = format!("bull:{}:meta", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
+        let mut conn = self.manager.pool.get().await?;
 
-        let paused_key_exists = self.client.hexists(key, "paused").await?;
+        let paused_key_exists = redis::Cmd::hexists(key, "paused").query_async(&mut conn).await?;
         Ok(paused_key_exists)
     }
 
@@ -118,16 +119,15 @@ impl<'c> Queue<'c> {
         Ok(())
     }
 
-    async fn trim_events<RV: FromRedisValue + Send + Sync>(
-        &mut self,
+   pub  async fn trim_events<RV: FromRedisValue + Send + Sync>(
+        & self,
         max_length: usize,
     ) -> anyhow::Result<RV> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
-        let result = self
-            .client
-            .xtrim(key, StreamMaxlen::Approx(max_length))
-            .await?;
+        let mut  conn = self.manager.pool.get().await?;
+        let result = redis::Cmd::xtrim(key, StreamMaxlen::Approx(max_length))
+            .query_async(&mut conn).await?;
         Ok(result)
     }
 

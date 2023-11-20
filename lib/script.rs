@@ -644,13 +644,14 @@ impl<'s> Scripts<'s> {
         ]);
 
         let version = self.get_server_version().await?;
-
+        // use semver to compare the version of the redis server
+        // if the version is greater than 6.2.0 then use the getStateV2 script
         let script = if *version > *"6.0.6" {
             "getStateV2"
         } else {
             "getState"
         };
-
+        println!("version: {}", script);
         let args = vec![job_id.to_string(), self.to_key(job_id)];
         let mut conn = self.connection.get().await.unwrap();
         let result: String = self
