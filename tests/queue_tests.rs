@@ -26,7 +26,6 @@ mod tests {
     async fn add_job_to_queue() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
         println!("{:#?}", queue);
-    
 
         let data = Data {
             socket_id: "w3ess2".to_ascii_lowercase(),
@@ -37,7 +36,9 @@ mod tests {
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
 
-        let _job: Job<'_, Data, String> = queue.add("test", data, JobOptions::default()).await?;
+        let job: Job<'_, Data, String> = queue.add("test", data, JobOptions::default()).await?;
+
+        println!("{:#?}", job);
 
         Ok(())
     }
