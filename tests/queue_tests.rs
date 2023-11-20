@@ -70,5 +70,28 @@ mod tests {
         assert_eq!(result, None);
         Ok(())
     }
-    
+
+    #[tokio::test]
+    async fn test_get_job_state() -> anyhow::Result<()> {
+        let queue = QUEUE.force().await;
+
+        let data = Data {
+            socket_id: "w3ess2".to_ascii_lowercase(),
+            cid: "Qufaufsduafsudafusaufusdaf".to_ascii_lowercase(),
+            file_id: "".to_owned(),
+            sizes: vec![],
+            user_id: "123".to_owned(),
+            tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
+        };
+        let job_opts = JobOptions::default();
+
+        let job: Job<'_, Data, String> = queue.add("test", data, job_opts).await?;
+        let state = queue.get_job_state(&job.id).await?;
+
+        assert_eq!(state, "waiting".to_string());
+        // cleanup
+        queue.remove_job(job.id, false).await?;
+
+        Ok(())
+    }
 }
