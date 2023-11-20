@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments)]
-use crate::{job, JobOptions, KeepJobs, WorkerOptions};
+use crate::add_job::add_job_to_queue;
+use crate::{functions, job, JobOptions, KeepJobs, WorkerOptions};
 use crate::{job::Job, redis_connection::*};
 use anyhow::Error;
 use anyhow::Ok;
@@ -10,6 +11,7 @@ pub use redis::Script;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp::encode;
 use serde::{Deserialize, Serialize};
+
 use std::{collections::HashMap, time};
 pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
 use crate::enums::ErrorCode::{self, *};
@@ -59,7 +61,7 @@ impl<'s> Scripts<'s> {
             keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
-             "addJob" =>  Script::new(&get_script("addJob-8.lua")),
+
             "extendLock" =>  Script::new(&get_script("extendLock-2.lua")),
             "getCounts" =>  Script::new(&get_script("getCounts-1.lua")),
             "obliterate" =>  Script::new(&get_script("obliterate-2.lua")),
@@ -125,21 +127,16 @@ impl<'s> Scripts<'s> {
     pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
         job: &Job<'s, D, R>,
-    ) -> anyhow::Result<R> {
+    ) -> anyhow::Result<i64> {
         let e = String::from("");
         let prefix = self.keys.get("").unwrap_or(&e);
-        let mut packed_args = Vec::new();
-        encode::write_str(&mut packed_args, prefix)?;
-
-        encode::write_str(&mut packed_args, &job.id)?;
-
-        encode::write_str(&mut packed_args, job.name)?;
-        encode::write_i64(&mut packed_args, job.timestamp)?;
-        encode::write_i64(&mut packed_args, job.delay)?;
-        // write the id,
+        let name = job.name;
+        let parent = job.parent.clone();
+        let parent_key = job.parent_key.clone();
 
         let json_data = serde_json::to_string(&job.data.clone())?;
-        let packed_opts: Vec<u8> = rmp_serde::encode::to_vec(&job.opts)?;
+
+        let parent_dep_key = parent_key.as_ref().map(|v| format!("{v}:dependencies"));
 
         let keys = self.get_keys(&[
             "wait",
@@ -151,21 +148,27 @@ impl<'s> Scripts<'s> {
             "completed",
             "events",
         ]);
-        let mut packed_json = Vec::new();
-        encode::write_bin(&mut packed_json, json_data.as_bytes())?;
 
-        println!(" keys {keys:?} = args[1] = {packed_args:?}  args[2] = {json_data:?} args[3] = {packed_opts:?}" );
         let mut conn = self.connection.get().await?;
-        let result = self
-            .commands
-            .get("addJob")
-            .unwrap()
-            .key(keys)
-            .arg(packed_args)
-            .arg(json_data)
-            .arg(packed_opts)
-            .invoke_async(&mut conn)
-            .await?;
+        let result = add_job_to_queue(
+            &keys,
+            (
+                prefix.to_owned(),
+                job.id.to_owned(),
+                name.to_owned(),
+                job.timestamp,
+                parent_key,
+                None,
+                parent_dep_key,
+                parent,
+                None,
+            ),
+            json_data,
+            &job.opts,
+            &mut conn,
+        )
+        .await?;
+
         Ok(result)
     }
     pub async fn pause<R: FromRedisValue>(&mut self, pause: bool) -> anyhow::Result<R> {
@@ -235,7 +238,7 @@ impl<'s> Scripts<'s> {
         if result == -1 {
             panic!("Cannot obliterate non-paused queue")
         } else if result == -2 {
-            panic!("cannot obliterate queu with active jobs")
+            panic!("cannot obliterate queue with active jobs")
         }
         Ok(result)
     }

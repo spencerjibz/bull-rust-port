@@ -17,6 +17,7 @@ pub struct KeepJobs {
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct JobOptions {
+     pub priority: i64,
     pub job_id: Option<String>,
     pub timestamp: Option<i64>, // timestamp when  the job was created
     pub delay: i64,             // number of milliseconds to wait until this job can be processed
@@ -65,6 +66,7 @@ impl Default for JobOptions {
             .as_secs_f32();
         //dbg!("{} {}", id, timestamp);
         Self {
+            priority: 0,
             timestamp: Some((timestamp * 1000.0).round() as i64),
             job_id: Some(id.to_string()),
             delay: 0,
