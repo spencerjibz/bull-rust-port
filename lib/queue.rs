@@ -131,7 +131,7 @@ impl<'c> Queue<'c> {
         Ok(result)
     }
 
-    async fn get_job_counts(&self, types: &[&'c str]) -> anyhow::Result<HashMap<String, i64>> {
+    pub async fn get_job_counts(&self, types: &[&'c str]) -> anyhow::Result<HashMap<String, i64>> {
         let mut counts = HashMap::new();
 
         let mut current_types = self.sanitize_job_types(types);
@@ -173,6 +173,14 @@ impl<'c> Queue<'c> {
             "waiting-children",
         ]
     }
+
+     pub async fn remove_job(&self, job_id: String,remove_children:bool) -> anyhow::Result<()> {
+        let mut scripts = self.scripts.lock().await;
+          scripts.remove(job_id,remove_children).await?;
+        Ok(())
+     }
+
+      
     pub async fn close(&self) {
         self.manager.close().await;
     }
