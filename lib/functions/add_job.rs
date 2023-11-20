@@ -289,7 +289,7 @@ pub async fn add_job_to_queue(
             .await?;
         } else if let Some(deps_key) = parent_dep_key.as_ref() {
             Cmd::sadd(deps_key, &job_id_key).query_async(con).await?;
-        } else {
+        } else if parent_key.is_some() {
             redis::cmd("HMSET")
                 .arg(&job_id_key)
                 .arg("parentKey")
