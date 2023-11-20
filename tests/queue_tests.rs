@@ -45,6 +45,34 @@ mod tests {
         queue.remove_job(id, false).await?;
         Ok(())
     }
+      #[tokio::test]
+    async fn add_job_to_queue_with_options() -> anyhow::Result<()> {
+        let queue = QUEUE.force().await;
+
+        let data = Data {
+            socket_id: "w3ess2".to_ascii_lowercase(),
+            cid: "Qufaufsduafsudafusaufusdaf".to_ascii_lowercase(),
+            file_id: "".to_owned(),
+            sizes: vec![],
+            user_id: "123".to_owned(),
+            tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
+        };
+        let mut  job_opts = JobOptions::default();
+        let id = job_opts.job_id.clone().unwrap();
+
+        job_opts.attempts = 3;
+        
+        job_opts.delay = 1000;
+
+        let job: Job<'_, Data, String> = queue.add("test", data, job_opts).await?;
+
+        assert_eq!(job.id, id.clone());
+        assert_eq!(job.opts.attempts, 3);
+        assert_eq!(job.opts.delay, 1000);
+        // cleanup
+        queue.remove_job(id, false).await?;
+        Ok(())
+    }
 
     #[tokio::test]
 
@@ -72,7 +100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_job_state() -> anyhow::Result<()> {
+    async fn get_job_state() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
         let data = Data {
