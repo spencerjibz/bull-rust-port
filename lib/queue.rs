@@ -89,7 +89,9 @@ impl<'c> Queue<'c> {
         let key = self.opts.prefix.unwrap_or(&b);
         let mut conn = self.manager.pool.get().await?;
 
-        let paused_key_exists = redis::Cmd::hexists(key, "paused").query_async(&mut conn).await?;
+        let paused_key_exists = redis::Cmd::hexists(key, "paused")
+            .query_async(&mut conn)
+            .await?;
         Ok(paused_key_exists)
     }
 
@@ -119,15 +121,16 @@ impl<'c> Queue<'c> {
         Ok(())
     }
 
-   pub  async fn trim_events<RV: FromRedisValue + Send + Sync>(
-        & self,
+    pub async fn trim_events<RV: FromRedisValue + Send + Sync>(
+        &self,
         max_length: usize,
     ) -> anyhow::Result<RV> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
-        let mut  conn = self.manager.pool.get().await?;
+        let mut conn = self.manager.pool.get().await?;
         let result = redis::Cmd::xtrim(key, StreamMaxlen::Approx(max_length))
-            .query_async(&mut conn).await?;
+            .query_async(&mut conn)
+            .await?;
         Ok(result)
     }
 

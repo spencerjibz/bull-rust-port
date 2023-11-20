@@ -60,8 +60,8 @@ impl<'b> RedisConnection<'b> {
     }
     pub fn to_conn_string(&self) -> String {
         use RedisOpts::*;
-         let opts = &self.conn_options;
-         opts.to_conn_string()
+        let opts = &self.conn_options;
+        opts.to_conn_string()
     }
 }
 

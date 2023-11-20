@@ -139,35 +139,33 @@ mod tests {
     }
 
     #[tokio::test]
-
-
-
     #[ignore]
-     async fn trim_events_manually() -> anyhow::Result<()> {
-           let queue = QUEUE.force().await;
-           let mut conn = queue.manager.pool.get().await?;
-              let job_opts = JobOptions::default();
+    async fn trim_events_manually() -> anyhow::Result<()> {
+        let queue = QUEUE.force().await;
+        let mut conn = queue.manager.pool.get().await?;
+        let job_opts = JobOptions::default();
 
+        // add multiple jobs
 
-              // add multiple jobs
+        let _job1: Job<'_, String, String> = queue
+            .add("test", "1".to_ascii_lowercase(), job_opts.clone())
+            .await?;
+        let _job2: Job<'_, String, String> = queue
+            .add("test", "2".to_ascii_lowercase(), job_opts.clone())
+            .await?;
+        let _job3: Job<'_, String, String> = queue
+            .add("test", "3".to_ascii_lowercase(), job_opts)
+            .await?;
 
-            let _job1:Job<'_, String, String> = queue.add("test", "1".to_ascii_lowercase(), job_opts.clone()).await?;
-            let _job2:Job<'_, String, String> = queue.add("test", "2".to_ascii_lowercase(), job_opts.clone()).await?;
-            let _job3:Job<'_, String, String> = queue.add("test", "3".to_ascii_lowercase(), job_opts).await?;
-  
-            let events_length:isize = redis::cmd("XLEN")
-                .arg("bull:test:events")
-                .query_async(&mut conn)
-                .await?;
+        let events_length: isize = redis::cmd("XLEN")
+            .arg("bull:test:events")
+            .query_async(&mut conn)
+            .await?;
 
-            assert_eq!(events_length,8 );
+        assert_eq!(events_length, 8);
 
-            queue.trim_events(4).await?;
-
-
-            
-
+        queue.trim_events(4).await?;
 
         Ok(())
-     }
+    }
 }
