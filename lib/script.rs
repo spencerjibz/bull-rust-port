@@ -61,7 +61,7 @@ impl<'s> Scripts<'s> {
             keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
-             "addJob" =>  Script::new(&get_script("addJob-8.lua")),
+
             "extendLock" =>  Script::new(&get_script("extendLock-2.lua")),
             "getCounts" =>  Script::new(&get_script("getCounts-1.lua")),
             "obliterate" =>  Script::new(&get_script("obliterate-2.lua")),
