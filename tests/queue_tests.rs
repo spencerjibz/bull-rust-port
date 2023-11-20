@@ -16,6 +16,7 @@ mod tests {
             let mut config = HashMap::new();
             config.insert("password", PASS);
             let redis_opts = RedisOpts::Config(config);
+
             Queue::<'_>::new("test", redis_opts, QueueOptions::default())
                 .await
                 .unwrap()
@@ -25,7 +26,6 @@ mod tests {
     #[tokio::test]
     async fn add_job_to_queue() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
-        println!("{:#?}", queue);
 
         let data = Data {
             socket_id: "w3ess2".to_ascii_lowercase(),
@@ -35,10 +35,12 @@ mod tests {
             user_id: "123".to_owned(),
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
+        let job_opts = JobOptions::default();
+        let id = job_opts.job_id.clone().unwrap();
 
-        let job: Job<'_, Data, String> = queue.add("test", data, JobOptions::default()).await?;
+        let job: Job<'_, Data, String> = queue.add("test", data, job_opts).await?;
 
-        println!("{:#?}", job);
+        assert_eq!(job.id, id);
 
         Ok(())
     }
