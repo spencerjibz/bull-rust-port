@@ -174,13 +174,18 @@ impl<'c> Queue<'c> {
         ]
     }
 
-     pub async fn remove_job(&self, job_id: String,remove_children:bool) -> anyhow::Result<()> {
+    pub async fn remove_job(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
         let mut scripts = self.scripts.lock().await;
-          scripts.remove(job_id,remove_children).await?;
+        scripts.remove(job_id, remove_children).await?;
         Ok(())
-     }
+    }
 
-      
+    pub async fn get_job_state(&self, job_id: &str) -> anyhow::Result<String> {
+        let mut scripts = self.scripts.lock().await;
+        let state = scripts.get_state(job_id).await?;
+        Ok(state)
+    }
+
     pub async fn close(&self) {
         self.manager.close().await;
     }
