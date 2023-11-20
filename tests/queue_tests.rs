@@ -45,7 +45,7 @@ mod tests {
         queue.remove_job(id, false).await?;
         Ok(())
     }
-      #[tokio::test]
+    #[tokio::test]
     async fn add_job_to_queue_with_options() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
@@ -57,11 +57,11 @@ mod tests {
             user_id: "123".to_owned(),
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
-        let mut  job_opts = JobOptions::default();
+        let mut job_opts = JobOptions::default();
         let id = job_opts.job_id.clone().unwrap();
 
         job_opts.attempts = 3;
-        
+
         job_opts.delay = 1000;
 
         let job: Job<'_, Data, String> = queue.add("test", data, job_opts).await?;
@@ -122,4 +122,52 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+
+    async fn is_paused() -> anyhow::Result<()> {
+        let queue = QUEUE.force().await;
+        queue.pause().await?;
+        let mut paused: bool = queue.is_paused().await?;
+        assert!(paused);
+
+        queue.resume().await?;
+        paused = queue.is_paused().await?;
+        assert!(!paused);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+
+
+    
+    #[ignore]
+     async fn trim_events_manually() -> anyhow::Result<()> {
+           let queue = QUEUE.force().await;
+           let mut conn = queue.manager.pool.get().await?;
+              let job_opts = JobOptions::default();
+
+
+              // add multiple jobs
+
+            let job1:Job<'_, String, String> = queue.add("test", "1".to_ascii_lowercase(), job_opts.clone()).await?;
+            let job2:Job<'_, String, String> = queue.add("test", "2".to_ascii_lowercase(), job_opts.clone()).await?;
+            let job3:Job<'_, String, String> = queue.add("test", "3".to_ascii_lowercase(), job_opts).await?;
+  
+            let events_length:isize = redis::cmd("XLEN")
+                .arg("bull:test:events")
+                .query_async(&mut conn)
+                .await?;
+
+            assert_eq!(events_length,8 );
+
+            queue.trim_events(4).await?;
+
+
+            
+
+
+        Ok(())
+     }
 }
