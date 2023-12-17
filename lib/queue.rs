@@ -95,7 +95,7 @@ impl<'c> Queue<'c> {
         Ok(paused_key_exists)
     }
 
-    async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
+    pub async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
         self.pause().await?;
         loop {
             let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
