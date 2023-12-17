@@ -19,7 +19,7 @@ jobs:
         with:
           toolchain: stable
           override: true
-      - run: touch .env
+      - run: echo REDIS_PASSWORD > .env
         
       - uses: actions-rs/cargo@v1
         with:
@@ -39,7 +39,7 @@ jobs:
         with:
           toolchain: stable
           override: true
-      - run: touch .env 
+      - run: echo REDIS_PASSWORD > .env
       - uses: actions-rs/cargo@v1
         env: 
            REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
@@ -55,7 +55,7 @@ jobs:
         with:
           toolchain: stable
           override: true
-      - run: touch .env 
+      - run:  echo REDIS_PASSWORD > .env
       - run: rustup component add rustfmt
       - uses: actions-rs/cargo@v1
         with:
@@ -71,7 +71,7 @@ jobs:
         with:
           toolchain: stable
           override: true
-      - run: touch .env 
+      - run:  echo REDIS_PASSWORD > .env
       - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
