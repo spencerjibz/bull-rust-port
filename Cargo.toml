@@ -17,7 +17,6 @@ anyhow = "1.0.70"
 async-trait = "0.1.68"
 deadpool-redis = {version = "0.13.0",features = ["rt_tokio_1"]}
 derive-redis-json = "0.1.1"
-dotenv_codegen = "0.15.0"
 erased-serde = "0.3.25"
 futures = "0.3.28"
 maplit = "1.0.2"

@@ -12,6 +12,8 @@ on:
 jobs:
   check:
     name: Check
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -22,14 +24,12 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: check
-      - name: Start Redis
-        uses: supercharge/redis-github-action@1.7.0
-        with: 
-          redis-version: 7 
-          redis-password: ${{secrets.REDIS_PASSWORD}}
+     
         
   test:
     name: Test Suite
+    env: 
+         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -37,14 +37,23 @@ jobs:
         with:
           toolchain: stable
           override: true
+
+      - name: Start Redis
+        uses: supercharge/redis-github-action@1.7.0
+        with: 
+          redis-version: 7 
+          redis-password: ${{ secrets.REDIS_PASSWORD }}
       - uses: actions-rs/cargo@v1
         env: 
-           REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         with:
+        
           command: test
 
   fmt:
     name: Rustfmt
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -60,6 +69,8 @@ jobs:
 
   clippy:
     name: Clippy
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1

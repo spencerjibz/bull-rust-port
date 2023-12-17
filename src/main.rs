@@ -1,6 +1,4 @@
-use anyhow::Ok;
 use bull::*;
-use dotenv_codegen::dotenv;
 
 use std::collections::HashMap;
 
@@ -9,10 +7,10 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let n = Instant::now();
-    let pass = dotenv!("REDIS_PASSWORD");
+    let pass = std::env::var("REDIS_PASSWORD")?;
 
     let mut config = HashMap::new();
-    config.insert("password", pass);
+    config.insert("password", pass.as_str());
     let redis_opts = RedisOpts::Config(config);
     let client = RedisConnection::init(redis_opts.clone()).await?;
 
