@@ -12,6 +12,8 @@ on:
 jobs:
   check:
     name: Check
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -30,6 +32,8 @@ jobs:
         
   test:
     name: Test Suite
+    env: 
+         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -38,13 +42,14 @@ jobs:
           toolchain: stable
           override: true
       - uses: actions-rs/cargo@v1
-        env: 
-           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+       
         with:
           command: test
 
   fmt:
     name: Rustfmt
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -60,6 +65,8 @@ jobs:
 
   clippy:
     name: Clippy
+    env: 
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
