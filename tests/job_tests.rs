@@ -4,7 +4,7 @@ mod tests {
     use anyhow::Ok;
     use async_lazy::Lazy;
     use bull::*;
-    use dotenv_codegen::dotenv;
+
     use std::collections::HashMap;
     use std::env;
     use std::fs::File;
@@ -15,7 +15,7 @@ mod tests {
             use core::result::Result::Ok;
 
             let mut config = HashMap::new();
-              let  pass = std::env::var("REDIS_PASSWORD").unwrap();
+            let pass = std::env::var("REDIS_PASSWORD").unwrap();
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
             Queue::<'static>::new("test", redis_opts, QueueOptions::default())
@@ -42,8 +42,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_job_from_string() -> anyhow::Result<()> {
-          let  pass = std::env::var("REDIS_PASSWORD").unwrap();
-        
+        let pass = std::env::var("REDIS_PASSWORD").unwrap();
+
         let mut config = HashMap::new();
         config.insert("password", pass.as_str());
         let redis_opts = RedisOpts::Config(config);

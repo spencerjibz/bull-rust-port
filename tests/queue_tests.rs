@@ -6,16 +6,13 @@ mod tests {
     use anyhow::Ok;
     use async_lazy::Lazy;
     use bull::*;
-    use dotenv_codegen::dotenv;
+
     use std::collections::HashMap;
 
     static QUEUE: Lazy<Queue<'static>> = Lazy::const_new(|| {
         Box::pin(async {
-            let mut pass = "REDIS_PASSWORD".to_owned();
-            match std::env::var(pass) {
-                Result::Ok(key) => pass = key,
-                _ => pass = dotenv!("REDIS_PASSWORD").to_owned(),
-            }
+            let pass = std::env::var("REDIS_PASSWORD").unwrap();
+
             let mut config = HashMap::new();
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
