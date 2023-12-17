@@ -42,8 +42,10 @@ jobs:
           toolchain: stable
           override: true
       - uses: actions-rs/cargo@v1
-       
+        env: 
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         with:
+        
           command: test
 
   fmt:
