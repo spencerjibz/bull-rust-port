@@ -58,6 +58,10 @@ impl<'s> Scripts<'s> {
             "events",
         ];
         for name in names {
+            if name.is_empty() {
+                keys.insert(name, format!("{prefix}:{queue_name}"));
+                continue;
+            }
             keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
@@ -71,6 +75,9 @@ impl<'s> Scripts<'s> {
             "moveStalledJobsToWait"=>  Script::new(&get_script("moveStalledJobsToWait-8.lua")),
             "retryJobs" => Script::new(&get_script("retryJobs-6.lua")),
             "updateProgress"=>  Script::new(&get_script("updateProgress-2.lua")),
+            "remove" => Script::new(&get_script("removeJob-1.lua")),
+            "getState" => Script::new(&get_script("getState-7.lua")),
+            "getStateV2" => Script::new(&get_script("getStateV2-7.lua")),
 
         };
         Self {
@@ -623,6 +630,85 @@ impl<'s> Scripts<'s> {
 
     pub fn move_to_failed_args() -> anyhow::Result<(Vec<String>, Vec<String>)> {
         unimplemented!()
+    }
+    pub async fn get_state(&self, job_id: &str) -> anyhow::Result<String> {
+        let keys = self.get_keys(&[
+            "completed",
+            "failed",
+            "delayed",
+            "active",
+            "wait",
+            "paused",
+            "waiting-children",
+            "prioritized",
+        ]);
+
+        let version = self.get_server_version().await?;
+        // use semver to compare the version of the redis server
+        // if the version is greater than 6.2.0 then use the getStateV2 script
+        let script = if *version > *"6.0.6" {
+            "getStateV2"
+        } else {
+            "getState"
+        };
+        println!("version: {}", script);
+        let args = vec![job_id.to_string(), self.to_key(job_id)];
+        let mut conn = self.connection.get().await.unwrap();
+        let result: String = self
+            .commands
+            .get(script)
+            .unwrap()
+            .key(keys)
+            .arg(args)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(result)
+    }
+    // write a function that return the version of the redis server
+    pub async fn get_server_version(&self) -> anyhow::Result<String> {
+        let mut conn = self.connection.get().await?;
+        let result: String = redis::cmd("INFO")
+            .arg("server")
+            .query_async(&mut conn)
+            .await?;
+
+        for line in result.lines() {
+            if line.starts_with("redis_version") {
+                let version = line.split(':').nth(1).unwrap();
+                return Ok(version.to_string());
+            }
+        }
+        Ok("".to_string())
+    }
+
+    pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
+        let mut keys = self.get_keys(&[""]);
+        let args = vec![
+            job_id,
+            if remove_children {
+                "1".to_owned()
+            } else {
+                "0".to_owned()
+            },
+        ];
+
+        //mutate the first value in the keys array
+
+        for (i, v) in keys.iter_mut().enumerate() {
+            if i == 0 {
+                v.push(':')
+            }
+        }
+        let mut conn = self.connection.get().await?;
+        self.commands
+            .get("remove")
+            .unwrap()
+            .key(keys)
+            .arg(args)
+            .invoke_async(&mut conn)
+            .await?;
+
+        Ok(())
     }
 }
 

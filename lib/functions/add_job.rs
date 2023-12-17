@@ -12,12 +12,12 @@ async fn get_next_delayed_timestamp(
     delayed_key: String,
     con: &mut Connection,
 ) -> anyhow::Result<Option<i64>> {
-    let result: Vec<String> = Cmd::zrange_withscores(delayed_key, 0, 0)
+    let mut result: Vec<String> = Cmd::zrange_withscores(delayed_key, 0, 0)
         .query_async(con)
         .await?;
 
     if !result.is_empty() {
-        if let Ok(mut next_time_stamp) = result[2].parse::<i64>() {
+        if let Ok(mut next_time_stamp) = result.pop().unwrap().parse::<i64>() {
             next_time_stamp /= 0x1000;
 
             return Ok(Some(next_time_stamp));
@@ -289,7 +289,7 @@ pub async fn add_job_to_queue(
             .await?;
         } else if let Some(deps_key) = parent_dep_key.as_ref() {
             Cmd::sadd(deps_key, &job_id_key).query_async(con).await?;
-        } else {
+        } else if parent_key.is_some() {
             redis::cmd("HMSET")
                 .arg(&job_id_key)
                 .arg("parentKey")

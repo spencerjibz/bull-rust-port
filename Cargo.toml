@@ -34,4 +34,5 @@ async-event-emitter = "0.1.2"
 chrono = "0.4.31"
 rmp-serde = "1.1.2"
 rmpv = "1.0.1"
+faker = { version = "0.0.4", optional = true }
 

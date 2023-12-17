@@ -84,15 +84,18 @@ impl<'c> Queue<'c> {
         Ok(result)
     }
 
-    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&mut self) -> anyhow::Result<RV> {
+    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&self) -> anyhow::Result<RV> {
         let b = format!("bull:{}:meta", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
+        let mut conn = self.manager.pool.get().await?;
 
-        let paused_key_exists = self.client.hexists(key, "paused").await?;
+        let paused_key_exists = redis::Cmd::hexists(key, "paused")
+            .query_async(&mut conn)
+            .await?;
         Ok(paused_key_exists)
     }
 
-    async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
+    pub async fn obliterate(&'static self, force: bool) -> anyhow::Result<()> {
         self.pause().await?;
         loop {
             let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
@@ -118,20 +121,20 @@ impl<'c> Queue<'c> {
         Ok(())
     }
 
-    async fn trim_events<RV: FromRedisValue + Send + Sync>(
-        &mut self,
+    pub async fn trim_events<RV: FromRedisValue + Send + Sync>(
+        &self,
         max_length: usize,
     ) -> anyhow::Result<RV> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
-        let result = self
-            .client
-            .xtrim(key, StreamMaxlen::Approx(max_length))
+        let mut conn = self.manager.pool.get().await?;
+        let result = redis::Cmd::xtrim(key, StreamMaxlen::Approx(max_length))
+            .query_async(&mut conn)
             .await?;
         Ok(result)
     }
 
-    async fn get_job_counts(&self, types: &[&'c str]) -> anyhow::Result<HashMap<String, i64>> {
+    pub async fn get_job_counts(&self, types: &[&'c str]) -> anyhow::Result<HashMap<String, i64>> {
         let mut counts = HashMap::new();
 
         let mut current_types = self.sanitize_job_types(types);
@@ -173,6 +176,19 @@ impl<'c> Queue<'c> {
             "waiting-children",
         ]
     }
+
+    pub async fn remove_job(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
+        let mut scripts = self.scripts.lock().await;
+        scripts.remove(job_id, remove_children).await?;
+        Ok(())
+    }
+
+    pub async fn get_job_state(&self, job_id: &str) -> anyhow::Result<String> {
+        let mut scripts = self.scripts.lock().await;
+        let state = scripts.get_state(job_id).await?;
+        Ok(state)
+    }
+
     pub async fn close(&self) {
         self.manager.close().await;
     }
