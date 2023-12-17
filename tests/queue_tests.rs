@@ -9,14 +9,12 @@ mod queue {
 
     use std::collections::HashMap;
 
-
     static QUEUE: Lazy<Queue<'static>> = Lazy::const_new(|| {
         Box::pin(async {
             let mut config = HashMap::new();
             let pass = std::env::var("REDIS_PASSWORD").unwrap();
 
-         
-            config.insert("password",  to_static_str(pass));
+            config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
 
             Queue::<'_>::new("test", redis_opts, QueueOptions::default())
@@ -163,7 +161,7 @@ mod queue {
             .arg("bull:test:events")
             .query_async(&mut conn)
             .await?;
-         println!("events_length: {}", events_length  );
+        println!("events_length: {}", events_length);
 
         //assert_eq!(events_length, 8);
 
