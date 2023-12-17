@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let n = Instant::now();
     let mut pass = "REDIS_PASSWORD".to_owned();
     match std::env::var(pass) {
-        Ok(key) => pass = key,
+        Ok(key) => pass = dbg!(key),
         _ => pass = dotenv!("REDIS_PASSWORD").to_owned(),
     }
 

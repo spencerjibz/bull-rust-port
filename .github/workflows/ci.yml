@@ -26,7 +26,7 @@ jobs:
         uses: supercharge/redis-github-action@1.7.0
         with: 
           redis-version: 7 
-          redis-password: ${{secrets.REDIS_PASSWORD}}
+          redis-password: ${{ secrets.REDIS_PASSWORD }}
         
   test:
     name: Test Suite
@@ -39,7 +39,7 @@ jobs:
           override: true
       - uses: actions-rs/cargo@v1
         env: 
-           REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
+           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         with:
           command: test
 
