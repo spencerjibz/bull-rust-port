@@ -1,11 +1,13 @@
-on: 
-  push: 
+
+
+name: Continuous integration 
+on:
+  push:
     branches:
       - main
   pull_request:
-      - main  
-
-name: Continuous integration 
+    branches:
+      - main
 
 jobs:
   check:
@@ -37,7 +39,7 @@ jobs:
           override: true
       - uses: actions-rs/cargo@v1
         env: 
-           REDIS_PASSWORD:${{secrets.REDIS_PASSWORD}}
+           REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
         with:
           command: test
 
