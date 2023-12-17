@@ -19,9 +19,11 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - run: touch .env
+        
       - uses: actions-rs/cargo@v1
         with:
-          command:  touch .env && check
+          command: check
       - name: Start Redis
         uses: supercharge/redis-github-action@1.7.0
         with: 
@@ -37,7 +39,7 @@ jobs:
         with:
           toolchain: stable
           override: true
-        
+      - run: touch .env 
       - uses: actions-rs/cargo@v1
         env: 
            REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
@@ -53,10 +55,11 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - run: touch .env 
       - run: rustup component add rustfmt
       - uses: actions-rs/cargo@v1
         with:
-          command:  touch .env && fmt
+          command: fmt
           args: --all -- --check
 
   clippy:
@@ -68,8 +71,9 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - run: touch .env 
       - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
-          command:  touch .env && clippy
+          command: clippy
           args: -- -D warnings
