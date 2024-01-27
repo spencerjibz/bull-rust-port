@@ -2,8 +2,8 @@ use crate::*;
 use async_event_emitter::AsyncCB;
 
 use futures::future::{BoxFuture, Future, FutureExt};
-use std::sync::Arc;
 use std::time::Duration;
+use std::{fmt::Debug, sync::Arc};
 use tokio::{
     task::{self, JoinHandle},
     time::{sleep, Instant},
@@ -27,12 +27,16 @@ impl Timer {
         let interval = Duration::from_secs(delay_secs);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
-        Self {
+        let mut timer = Self {
             interval,
             callback: Arc::new(parsed_cb),
             task: None,
             _ok: true,
-        }
+        };
+
+        timer.run();
+
+        timer
     }
 
     pub fn run(&mut self) {
@@ -64,13 +68,13 @@ impl Timer {
 // write a test for this
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicI32;
+
     use super::*;
     #[tokio_shared_rt::test(shared = false)]
     async fn runs_and_stops() {
-        let mut x = 0;
         let mut timer = Timer::new(1, || async { println!("hello") });
-
-        timer.run();
+        assert!(timer._ok);
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         timer.stop();
