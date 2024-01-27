@@ -1,5 +1,4 @@
 #![allow(unused_imports)]
-
 #![allow(clippy::needless_return)]
 #[cfg(test)]
 mod tests {

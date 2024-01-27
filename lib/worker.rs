@@ -69,16 +69,15 @@ impl<
             + Deserialize<'a>,
     > Worker<'a, D, R>
 {
-    pub async fn new<F,C>(
+    pub async fn new<F, C>(
         name: &'a str,
         queue: &'a Queue<'a>,
         processor: C,
         opts: WorkerOptions,
     ) -> Worker<'a, D, R>
     where
-        C: Fn(D) ->  F + Send + Sync + 'static,
-        F:  Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
-        
+        C: Fn(D) -> F + Send + Sync + 'static,
+        F: Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
     {
         let emitter = AsyncEventEmitter::new();
         let con_string = to_static_str(opts.clone().connection);
@@ -86,7 +85,7 @@ impl<
         let prefix = opts.clone().prefix;
         let connection = RedisConnection::init(redis_opts).await.unwrap();
         let scripts = script::Scripts::new(to_static_str(prefix), name, connection.pool.clone());
-        let callback =   move |data:D| processor(data).boxed() ;
+        let callback = move |data: D| processor(data).boxed();
 
         Self {
             name,
@@ -108,22 +107,21 @@ impl<
         }
     }
 
-    async fn run( &'static mut self) -> anyhow::Result<()> {
+    async fn run(&'static mut self) -> anyhow::Result<()> {
         if self.running {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
 
         let copy = Arc::new(Mutex::new(self.clone()));
-        let timer = Timer::new(self.options.lock_duration as u64 / 2,  move || {
+        let timer = Timer::new(self.options.lock_duration as u64 / 2, move || {
             let mut worker = copy.clone();
-                async move {
+            async move {
                 worker.lock().await.extend_locks().await;
-                }
-        
+            }
         });
 
         let cp = Arc::new(Mutex::new(self.clone()));
-        let stalled_check_timer = Timer::new(self.options.stalled_interval as u64, move ||  {
+        let stalled_check_timer = Timer::new(self.options.stalled_interval as u64, move || {
             let mut worker = cp.clone();
             async move {
                 worker.lock().await.run_stalled_jobs().await;
