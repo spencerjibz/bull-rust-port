@@ -1,5 +1,6 @@
 // write test for the queue
 #![allow(unused_imports, dead_code)]
+#![allow(clippy::needless_return)]
 #[cfg(test)]
 mod queue {
 
@@ -12,7 +13,7 @@ mod queue {
     static QUEUE: Lazy<Queue<'static>> = Lazy::const_new(|| {
         Box::pin(async {
             let mut config = HashMap::new();
-            let pass = std::env::var("REDIS_PASSWORD").unwrap();
+            let pass = std::env::var("REDIS_PASSWORD").unwrap_or_default();
 
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
@@ -23,7 +24,7 @@ mod queue {
         })
     });
 
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
     async fn add_job_to_queue() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
@@ -45,7 +46,7 @@ mod queue {
         queue.remove_job(id, false).await?;
         Ok(())
     }
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
     async fn add_job_to_queue_with_options() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
@@ -74,7 +75,7 @@ mod queue {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
 
     async fn remove_job_from_queue() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
@@ -99,7 +100,7 @@ mod queue {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
     async fn get_job_state() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
@@ -123,7 +124,7 @@ mod queue {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
 
     async fn is_paused() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
@@ -138,7 +139,7 @@ mod queue {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared)]
     #[ignore]
     async fn trim_events_manually() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
