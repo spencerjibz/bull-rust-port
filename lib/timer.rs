@@ -19,13 +19,15 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new<F>(delay_secs: u64, cb: F) -> Self
+    pub fn new<C,F>(delay_secs: u64, cb: C) -> Self
     where
-        F: Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
+
+        C: Fn() -> F + Send + Sync + 'static,
+        F: Future<Output=()> + Send +  'static,
     {
         let interval = Duration::from_secs(delay_secs);
         #[allow(clippy::redundant_closure)]
-        let parsed_cb = move || cb();
+        let parsed_cb = move || cb().boxed();
         Self {
             interval,
             callback: Arc::new(parsed_cb),
@@ -64,10 +66,10 @@ impl Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
+    #[tokio_shared_rt::test(shared=false)]
     async fn runs_and_stops() {
         let mut x = 0;
-        let mut timer = Timer::new(1, || async move { println!("hello") }.boxed());
+        let mut timer = Timer::new(1, || async  { println!("hello") });
 
         timer.run();
 
