@@ -1,3 +1,4 @@
+use anyhow::Ok;
 pub use async_trait::async_trait;
 pub use deadpool_redis::{
     redis::{AsyncCommands, Client, RedisResult},
@@ -143,4 +144,12 @@ impl RedisOpts<'_> {
             }
         }
     }
+}
+
+pub fn fetch_redis_pass() -> String {
+    use dotenv;
+    if let Err(err) = dotenv::dotenv() {
+        // dothing; continue
+    }
+    std::env::var("REDIS_PASSWORD").unwrap_or_default()
 }
