@@ -7,7 +7,7 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let n = Instant::now();
-    let pass = std::env::var("REDIS_PASSWORD").unwrap_or_default();
+    let pass = fetch_redis_pass();
 
     let mut config = HashMap::new();
     config.insert("password", pass.as_str());

@@ -16,7 +16,7 @@ mod tests {
             use core::result::Result::Ok;
 
             let mut config = HashMap::new();
-            let pass = std::env::var("REDIS_PASSWORD").unwrap_or_default();
+            let pass = fetch_redis_pass();
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
             Queue::<'static>::new("test", redis_opts, QueueOptions::default())
@@ -43,7 +43,7 @@ mod tests {
 
     #[tokio_shared_rt::test]
     async fn create_job_from_string() -> anyhow::Result<()> {
-        let pass = std::env::var("REDIS_PASSWORD").unwrap_or_default();
+        let pass = fetch_redis_pass();
 
         let mut config = HashMap::new();
         config.insert("password", pass.as_str());

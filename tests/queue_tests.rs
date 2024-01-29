@@ -13,7 +13,7 @@ mod queue {
     static QUEUE: Lazy<Queue<'static>> = Lazy::const_new(|| {
         Box::pin(async {
             let mut config = HashMap::new();
-            let pass = std::env::var("REDIS_PASSWORD").unwrap_or_default();
+            let pass = fetch_redis_pass();
 
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
