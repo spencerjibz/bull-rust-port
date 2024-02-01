@@ -254,7 +254,7 @@ impl<
                 None
             };
 
-            let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy)?;
+            let delay = backoff_s.calculate(backoff, self.attempts_made, custom_strategy);
             if let Some(num) = delay {
                 if num == -1 {
                     move_to_failed = true;
