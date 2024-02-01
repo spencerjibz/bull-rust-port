@@ -2,7 +2,7 @@ use bull::*;
 
 use std::collections::HashMap;
 
-use std::time::Instant;
+use tokio::time::Instant;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
