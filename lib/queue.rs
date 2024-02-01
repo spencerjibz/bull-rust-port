@@ -14,42 +14,45 @@ use futures::lock::Mutex;
 use redis::streams::StreamMaxlen;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::sync::Arc;
 
-pub struct Queue<'c> {
-    pub prefix: &'c str,
-    pub name: &'c str,
-    pub client: Connection,
-    pub opts: QueueOptions<'c>,
-    pub scripts: Mutex<script::Scripts<'c>>,
-    pub manager: RedisConnection<'c>,
+#[derive(Clone)]
+pub struct Queue {
+    pub prefix: &'static str,
+    pub name: String,
+    pub client: Arc<Mutex<Connection>>,
+    pub opts: Arc<QueueOptions>,
+    pub scripts: Arc<Mutex<script::Scripts>>,
+    pub manager: Arc<RedisConnection>,
 }
 
-impl<'c> Queue<'c> {
+impl Queue {
     pub async fn new(
-        name: &'c str,
-        redis_opts: RedisOpts<'c>,
-        queue_opts: QueueOptions<'c>,
-    ) -> anyhow::Result<Queue<'c>> {
+        name: &str,
+        redis_opts: RedisOpts,
+        queue_opts: QueueOptions,
+    ) -> anyhow::Result<Queue> {
         let prefix = queue_opts.prefix.unwrap_or("bull");
 
         let new_connection = RedisConnection::init(redis_opts.clone()).await?;
         let last_connection = RedisConnection::init(redis_opts.clone()).await?;
         let connection = RedisConnection::init(redis_opts.clone()).await?;
         let conn_str = redis_opts.to_conn_string();
-        let scripts = script::Scripts::new(prefix, name, connection.pool);
+        let scripts = script::Scripts::new(prefix.to_owned(), name.to_owned(), connection.pool);
 
         Ok(Self {
             prefix,
-            name,
-            opts: queue_opts,
-            scripts: Mutex::new(scripts),
-            client: new_connection.conn,
-            manager: last_connection,
+            name: name.to_owned(),
+            opts: Arc::new(queue_opts),
+            scripts: Arc::new(Mutex::new(scripts)),
+            client: Arc::new(Mutex::new(new_connection.conn)),
+            manager: Arc::new(last_connection),
         })
     }
     pub async fn add<
-        D: Deserialize<'c> + Serialize + Clone + Send + Sync + 'static + std::fmt::Debug,
-        R: Deserialize<'c>
+        'a,
+        D: Deserialize<'a> + Serialize + Clone + Send + Sync + std::fmt::Debug,
+        R: Deserialize<'a>
             + Serialize
             + FromRedisValue
             + Send
@@ -58,11 +61,12 @@ impl<'c> Queue<'c> {
             + Clone
             + std::fmt::Debug,
     >(
-        &'c self,
-        name: &'static str,
+        &self,
+        name: &'a str,
         data: D,
         opts: JobOptions,
     ) -> anyhow::Result<Job<D, R>> {
+        let copy = self.clone();
         let mut job = Job::<D, R>::new(name, self, data, opts).await?;
         let mut scripts = self.scripts.lock().await;
         let job_id = scripts.add_job(&job).await?;
@@ -71,14 +75,17 @@ impl<'c> Queue<'c> {
         Ok(job)
     }
 
-    pub async fn pause<R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static>(
+    pub async fn pause<
+        'c,
+        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
+    >(
         &'c self,
     ) -> anyhow::Result<R> {
         let result = self.scripts.lock().await.pause(true).await?;
 
         Ok(result)
     }
-    pub async fn resume<R: FromRedisValue>(&'c self) -> anyhow::Result<R> {
+    pub async fn resume<R: FromRedisValue>(&self) -> anyhow::Result<R> {
         let result = self.scripts.lock().await.pause(false).await?;
 
         Ok(result)
@@ -106,7 +113,7 @@ impl<'c> Queue<'c> {
         Ok(())
     }
 
-    pub async fn retry_jobs<'s>(&'s self, opts: RetryJobOptions) -> anyhow::Result<()> {
+    pub async fn retry_jobs(&self, opts: RetryJobOptions) -> anyhow::Result<()> {
         loop {
             let cursor = self
                 .scripts
@@ -134,7 +141,10 @@ impl<'c> Queue<'c> {
         Ok(result)
     }
 
-    pub async fn get_job_counts(&self, types: &[&'c str]) -> anyhow::Result<HashMap<String, i64>> {
+    pub async fn get_job_counts(
+        &self,
+        types: &[&'static str],
+    ) -> anyhow::Result<HashMap<String, i64>> {
         let mut counts = HashMap::new();
 
         let mut current_types = self.sanitize_job_types(types);
@@ -153,7 +163,7 @@ impl<'c> Queue<'c> {
         Ok(counts)
     }
 
-    fn sanitize_job_types(&self, types: &[&'c str]) -> Vec<&str> {
+    fn sanitize_job_types(&self, types: &[&'static str]) -> Vec<&'static str> {
         if !types.is_empty() {
             let mut v = types.to_vec();
 
@@ -195,7 +205,7 @@ impl<'c> Queue<'c> {
 }
 
 use std::fmt;
-impl fmt::Debug for Queue<'_> {
+impl fmt::Debug for Queue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Queue")
             .field("prefix", &self.prefix)

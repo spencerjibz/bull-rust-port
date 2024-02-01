@@ -2,7 +2,7 @@ use bull::*;
 
 use std::collections::HashMap;
 
-use std::time::Instant;
+use tokio::time::Instant;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let pass = fetch_redis_pass();
 
     let mut config = HashMap::new();
-    config.insert("password", pass.as_str());
+    config.insert("password", to_static_str(pass));
     let redis_opts = RedisOpts::Config(config);
     let client = RedisConnection::init(redis_opts.clone()).await?;
 
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::fs::read_to_string("test.json").await?
     };
 
-    let queue = Queue::<'_>::new("test", redis_opts, QueueOptions::default()).await?;
+    let queue = Queue::new("test", redis_opts, QueueOptions::default()).await?;
 
     let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "207").await?;
     println!("{:#?}", job);
