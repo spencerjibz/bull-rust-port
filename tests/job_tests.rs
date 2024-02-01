@@ -29,13 +29,9 @@ mod job {
     async fn creating_a_new_job() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
-        let job = Job::<String, String>::new(
-            "test",
-            queue,
-            "test".to_string(),
-            JobOptions::default(),
-        )
-        .await?;
+        let job =
+            Job::<String, String>::new("test", queue, "test".to_string(), JobOptions::default())
+                .await?;
         assert_eq!(job.name, "test");
 
         Ok(())
@@ -48,7 +44,7 @@ mod job {
         let mut config = HashMap::new();
         config.insert("password", pass.as_str());
         let redis_opts = RedisOpts::from_string_map(config);
-        let  queue = Queue::new("test", redis_opts, QueueOptions::default()).await?;
+        let queue = Queue::new("test", redis_opts, QueueOptions::default()).await?;
         let mut client = queue.client.lock().await;
         let result: HashMap<String, String> =
             client.hgetall("bull:pinningQueue:207").await.unwrap();

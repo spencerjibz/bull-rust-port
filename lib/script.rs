@@ -11,7 +11,7 @@ pub use redis::Script;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp::encode;
 use serde::{Deserialize, Serialize};
-  
+
 use std::{collections::HashMap, time};
 pub type ScriptCommands = HashMap<&'static str, Script>;
 use crate::enums::ErrorCode::{self, *};
@@ -20,7 +20,7 @@ use std::any::{self, Any};
 #[derive(Clone)]
 pub struct Scripts {
     pub prefix: String,
-    pub queue_name:String,
+    pub queue_name: String,
     pub keys: HashMap<String, String>,
     pub commands: ScriptCommands,
     pub connection: Pool,
@@ -38,9 +38,8 @@ impl std::fmt::Debug for Scripts {
     }
 }
 
-impl Scripts  {
+impl Scripts {
     pub fn new(prefix: String, queue_name: String, conn: Pool) -> Self {
-        
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",
@@ -134,7 +133,7 @@ impl Scripts  {
     }
     pub async fn add_job<'s, D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
-        job: &Job <D, R>,
+        job: &Job<D, R>,
     ) -> anyhow::Result<i64> {
         let e = String::from("");
         let prefix = self.keys.get("").unwrap_or(&e);
@@ -250,7 +249,7 @@ impl Scripts  {
         }
         Ok(result)
     }
-    
+
     pub async fn move_to_active(
         &mut self,
         token: &str,
@@ -299,7 +298,7 @@ impl Scripts  {
         V: Any + ToRedisArgs,
     >(
         &mut self,
-        job: &mut Job <D, R>,
+        job: &mut Job<D, R>,
         val: V,
         prop_val: &str,
         should_remove: bool,
@@ -532,7 +531,8 @@ impl Scripts  {
             None => Ok(None),
         }
     }
-    pub async fn move_to_completed<'s,
+    pub async fn move_to_completed<
+        's,
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
         V: Any + ToRedisArgs,
@@ -562,7 +562,7 @@ impl Scripts  {
         R: FromRedisValue + Any + Send + Sync + 'static + Clone,
     >(
         &mut self,
-        job: &mut Job< D, R>,
+        job: &mut Job<D, R>,
         failed_reason: String,
         remove_on_failure: bool,
         token: &str,

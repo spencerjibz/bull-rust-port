@@ -15,7 +15,7 @@ use std::{borrow::Borrow, clone, collections::HashMap};
 #[derive(Clone)]
 pub struct Job<D, R> {
     pub name: &'static str,
-    pub queue:  Arc<Queue>,
+    pub queue: Arc<Queue>,
     pub timestamp: i64,
     pub attempts_made: i64,
     pub attempts: i64,
@@ -38,7 +38,7 @@ pub struct Job<D, R> {
     pub parent: Option<Parent>,
 }
 // implement Serialize for Job
-impl< D: Serialize, R: Serialize> Serialize for Job< D, R> {
+impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -75,8 +75,8 @@ impl< D: Serialize, R: Serialize> Serialize for Job< D, R> {
 impl<
         'a,
         D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone ,
-    > PartialEq for Job< D, R>
+        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone,
+    > PartialEq for Job<D, R>
 {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -94,7 +94,7 @@ impl<
             + Clone
             + 'static
             + std::fmt::Debug,
-    > Job< D, R>
+    > Job<D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
         self.progress = serde_json::to_string(&progress).unwrap();
@@ -108,8 +108,8 @@ impl<
     }
 
     pub async fn new(
-        name:&str,
-        queue:& Queue,
+        name: &str,
+        queue: &Queue,
         data: D,
         opts: JobOptions,
     ) -> anyhow::Result<Job<D, R>> {
@@ -144,7 +144,11 @@ impl<
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: Arc::new(Mutex::new(Scripts::new(prefix.to_string(), queue_name.to_owned(), dup_conn))),
+            scripts: Arc::new(Mutex::new(Scripts::new(
+                prefix.to_string(),
+                queue_name.to_owned(),
+                dup_conn,
+            ))),
             parent_key,
             discarded: false,
             parent,
@@ -376,7 +380,7 @@ impl<
         'a,
         D: Deserialize<'a> + Clone + Serialize + std::fmt::Debug,
         R: Deserialize<'a> + Serialize + std::fmt::Debug,
-    > std::fmt::Debug for Job< D, R>
+    > std::fmt::Debug for Job<D, R>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
