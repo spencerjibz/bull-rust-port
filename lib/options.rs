@@ -144,9 +144,9 @@ impl Default for WorkerOptions {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct QueueOptions<'d> {
-    pub prefix: Option<&'d str>,
+#[derive(Debug, Default,Clone)]
+pub struct QueueOptions {
+    pub prefix: Option<&'static str>,
     pub settings: QueueSettings,
 }
 

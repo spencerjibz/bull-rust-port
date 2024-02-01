@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time;
 use std::{borrow::Borrow, clone, collections::HashMap};
 #[derive(Clone)]
-pub struct Job<'a, D, R> {
-    pub name: &'a str,
-    pub queue: &'a Queue<'a>,
+pub struct Job<D, R> {
+    pub name: &'static str,
+    pub queue:  Arc<Queue>,
     pub timestamp: i64,
     pub attempts_made: i64,
     pub attempts: i64,
@@ -25,8 +25,8 @@ pub struct Job<'a, D, R> {
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: Arc<Mutex<script::Scripts<'a>>>,
-    pub repeat_job_key: Option<&'a str>,
+    scripts: Arc<Mutex<script::Scripts>>,
+    pub repeat_job_key: Option<&'static str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<String>,
     pub remove_on_complete: RemoveOnCompletionOrFailure,
@@ -38,7 +38,7 @@ pub struct Job<'a, D, R> {
     pub parent: Option<Parent>,
 }
 // implement Serialize for Job
-impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
+impl< D: Serialize, R: Serialize> Serialize for Job< D, R> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -75,8 +75,8 @@ impl<'a, D: Serialize, R: Serialize> Serialize for Job<'a, D, R> {
 impl<
         'a,
         D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone + 'static,
-    > PartialEq for Job<'a, D, R>
+        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone ,
+    > PartialEq for Job< D, R>
 {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -94,7 +94,7 @@ impl<
             + Clone
             + 'static
             + std::fmt::Debug,
-    > Job<'a, D, R>
+    > Job< D, R>
 {
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
         self.progress = serde_json::to_string(&progress).unwrap();
@@ -108,13 +108,13 @@ impl<
     }
 
     pub async fn new(
-        name: &'a str,
-        queue: &'a Queue<'a>,
+        name:&str,
+        queue:& Queue,
         data: D,
         opts: JobOptions,
-    ) -> anyhow::Result<Job<'a, D, R>> {
-        let prefix = queue.prefix;
-        let queue_name = queue.name;
+    ) -> anyhow::Result<Job<D, R>> {
+        let prefix = &queue.prefix;
+        let queue_name = &queue.name;
         let dup_conn = queue.manager.pool.clone();
         let conn_str = queue.manager.to_conn_string();
         let mut opt = opts.clone();
@@ -123,11 +123,12 @@ impl<
 
         let parent_key = parent.clone().map(|v| format!("{}:{}", &v.queue, &v.id));
         let id = opts.job_id.unwrap();
+        let que = queue.clone();
 
         Ok(Self {
             opts: opt,
-            queue,
-            name,
+            queue: Arc::new(que),
+            name: to_static_str(name.to_string()),
             id,
             progress: String::default(),
             timestamp: opts.timestamp.unwrap(),
@@ -143,7 +144,7 @@ impl<
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            scripts: Arc::new(Mutex::new(Scripts::new(prefix, queue_name, dup_conn))),
+            scripts: Arc::new(Mutex::new(Scripts::new(prefix.to_string(), queue_name.to_owned(), dup_conn))),
             parent_key,
             discarded: false,
             parent,
@@ -151,10 +152,10 @@ impl<
     }
 
     pub async fn from_json(
-        mut queue: &'a Queue<'a>,
+        mut queue: &'a Queue,
         raw_string: String,
         job_id: &'a str,
-    ) -> anyhow::Result<Job<'a, D, R>> {
+    ) -> anyhow::Result<Job<D, R>> {
         // use serde_json to convert to job;
         //println!("raw_string: {:?}", raw_string);
 
@@ -210,9 +211,9 @@ impl<
     }
 
     pub async fn from_id<'c>(
-        queue: &'a Queue<'a>,
+        queue: &'a Queue,
         job_id: &'c str,
-    ) -> anyhow::Result<Option<Job<'a, D, R>>> {
+    ) -> anyhow::Result<Option<Job<D, R>>> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
         let mut conn = queue.manager.pool.clone().get().await?;
@@ -375,7 +376,7 @@ impl<
         'a,
         D: Deserialize<'a> + Clone + Serialize + std::fmt::Debug,
         R: Deserialize<'a> + Serialize + std::fmt::Debug,
-    > std::fmt::Debug for Job<'a, D, R>
+    > std::fmt::Debug for Job< D, R>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")

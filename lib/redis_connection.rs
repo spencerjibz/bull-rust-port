@@ -9,22 +9,22 @@ use futures::prelude::*;
 use super::*;
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, default};
+use std::{collections::HashMap, default, hash::Hash};
 
-pub struct RedisConnection<'b> {
+pub struct RedisConnection {
     pub conn: Connection,
-    pub conn_options: RedisOpts<'b>,
+    pub conn_options: RedisOpts,
     pub pool: Pool,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
-pub enum RedisOpts<'a> {
-    Url(&'a str),
-    Config(HashMap<&'a str, &'a str>),
+pub enum RedisOpts {
+    Url(&'static str),
+    Config(HashMap<&'static str, &'static str>),
 }
 
-impl<'b> RedisConnection<'b> {
-    pub async fn init(redis_options: RedisOpts<'b>) -> anyhow::Result<RedisConnection> {
+impl RedisConnection {
+    pub async fn init(redis_options: RedisOpts) -> anyhow::Result<RedisConnection> {
         use RedisOpts::*;
         match &redis_options {
             Url(s) => {
@@ -73,7 +73,7 @@ pub trait RedisConnectionTrait {
 }
 
 #[async_trait]
-impl RedisConnectionTrait for RedisConnection<'_> {
+impl RedisConnectionTrait for RedisConnection {
     async fn disconnect(&self) -> anyhow::Result<()> {
         let mut conn = self.pool.get().await?;
         let _ = redis::cmd("CLIENT")
@@ -116,13 +116,13 @@ impl RedisConnectionTrait for Pool {
     }
 }
 //impl Default for RedisOpts<'_>
-impl default::Default for RedisOpts<'_> {
+impl default::Default for RedisOpts {
     fn default() -> Self {
         RedisOpts::Url("redis://localhost:6379")
     }
 }
 
-impl RedisOpts<'_> {
+impl RedisOpts {
     pub fn new() -> Self {
         RedisOpts::default()
     }
@@ -143,6 +143,19 @@ impl RedisOpts<'_> {
                 format!("redis://{username}:{password}@{host}:{port}")
             }
         }
+    }
+
+    pub fn from_string_map<T: ToString + Eq + Hash>(map: HashMap<T, T>) -> RedisOpts {
+        let mut hash: HashMap<&'static str, &'static str> = HashMap::new();
+
+        for (key) in map.keys() {
+            let key_static = to_static_str(key.to_string());
+            if let Some(val) = map.get(key) {
+                let result = to_static_str(val.to_string());
+                hash.insert(key_static, result);
+            }
+        }
+        RedisOpts::Config(hash)
     }
 }
 

@@ -11,23 +11,23 @@ pub use redis::Script;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp::encode;
 use serde::{Deserialize, Serialize};
-
+  
 use std::{collections::HashMap, time};
-pub type ScriptCommands<'c> = HashMap<&'c str, Script>;
+pub type ScriptCommands = HashMap<&'static str, Script>;
 use crate::enums::ErrorCode::{self, *};
 use crate::redis_connection::*;
 use std::any::{self, Any};
 #[derive(Clone)]
-pub struct Scripts<'s> {
-    pub prefix: &'s str,
-    pub queue_name: &'s str,
-    pub keys: HashMap<&'s str, String>,
-    pub commands: ScriptCommands<'s>,
+pub struct Scripts {
+    pub prefix: String,
+    pub queue_name:String,
+    pub keys: HashMap<String, String>,
+    pub commands: ScriptCommands,
     pub connection: Pool,
 }
 
 // debug implementation for Scripts
-impl<'s> std::fmt::Debug for Scripts<'s> {
+impl std::fmt::Debug for Scripts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Scripts")
             .field("prefix", &self.prefix)
@@ -38,8 +38,9 @@ impl<'s> std::fmt::Debug for Scripts<'s> {
     }
 }
 
-impl<'s> Scripts<'s> {
-    pub fn new(prefix: &'s str, queue_name: &'s str, conn: Pool) -> Self {
+impl Scripts  {
+    pub fn new(prefix: String, queue_name: String, conn: Pool) -> Self {
+        
         let mut keys = HashMap::with_capacity(14);
         let names = [
             "",
@@ -59,10 +60,10 @@ impl<'s> Scripts<'s> {
         ];
         for name in names {
             if name.is_empty() {
-                keys.insert(name, format!("{prefix}:{queue_name}"));
+                keys.insert(name.to_owned(), format!("{prefix}:{queue_name}"));
                 continue;
             }
-            keys.insert(name, format!("{prefix}:{queue_name}:{name}"));
+            keys.insert(name.to_owned(), format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
 
@@ -88,10 +89,10 @@ impl<'s> Scripts<'s> {
             connection: conn,
         }
     }
-    fn to_key(&self, name: &'s str) -> String {
+    fn to_key(&self, name: &str) -> String {
         format!("{}:{}:{}", self.prefix, self.queue_name, name)
     }
-    fn get_keys(&self, keys: &[&'s str]) -> Vec<String> {
+    fn get_keys(&self, keys: &[&str]) -> Vec<String> {
         keys.iter()
             .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
             .collect()
@@ -131,9 +132,9 @@ impl<'s> Scripts<'s> {
         ];
         Ok((keys, args))
     }
-    pub async fn add_job<D: Serialize + Clone, R: FromRedisValue>(
+    pub async fn add_job<'s, D: Serialize + Clone, R: FromRedisValue>(
         &mut self,
-        job: &Job<'s, D, R>,
+        job: &Job <D, R>,
     ) -> anyhow::Result<i64> {
         let e = String::from("");
         let prefix = self.keys.get("").unwrap_or(&e);
@@ -249,11 +250,11 @@ impl<'s> Scripts<'s> {
         }
         Ok(result)
     }
-
+    
     pub async fn move_to_active(
         &mut self,
         token: &str,
-        opts: WorkerOptions,
+        opts: &WorkerOptions,
     ) -> anyhow::Result<MoveToAciveResult> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
@@ -298,7 +299,7 @@ impl<'s> Scripts<'s> {
         V: Any + ToRedisArgs,
     >(
         &mut self,
-        job: &mut Job<'s, D, R>,
+        job: &mut Job <D, R>,
         val: V,
         prop_val: &str,
         should_remove: bool,
@@ -531,13 +532,13 @@ impl<'s> Scripts<'s> {
             None => Ok(None),
         }
     }
-    pub async fn move_to_completed<
+    pub async fn move_to_completed<'s,
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
         V: Any + ToRedisArgs,
     >(
         &mut self,
-        job: &mut Job<'s, D, R>,
+        job: &mut Job<D, R>,
         val: V,
         remove_on_complete: bool,
         token: &str,
@@ -561,7 +562,7 @@ impl<'s> Scripts<'s> {
         R: FromRedisValue + Any + Send + Sync + 'static + Clone,
     >(
         &mut self,
-        job: &mut Job<'s, D, R>,
+        job: &mut Job< D, R>,
         failed_reason: String,
         remove_on_failure: bool,
         token: &str,

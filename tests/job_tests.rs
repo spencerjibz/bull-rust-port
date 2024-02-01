@@ -11,7 +11,7 @@ mod tests {
     use std::fs::File;
     use std::time::{Instant, SystemTime};
 
-    static QUEUE: Lazy<Queue<'static>> = Lazy::const_new(|| {
+    static QUEUE: Lazy<Queue> = Lazy::const_new(|| {
         Box::pin(async {
             use core::result::Result::Ok;
 
@@ -19,7 +19,7 @@ mod tests {
             let pass = fetch_redis_pass();
             config.insert("password", to_static_str(pass));
             let redis_opts = RedisOpts::Config(config);
-            Queue::<'static>::new("test", redis_opts, QueueOptions::default())
+            Queue::new("test", redis_opts, QueueOptions::default())
                 .await
                 .unwrap()
         })
@@ -29,7 +29,7 @@ mod tests {
     async fn creating_a_new_job() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
-        let job = Job::<'_, String, String>::new(
+        let job = Job::<String, String>::new(
             "test",
             queue,
             "test".to_string(),
@@ -47,11 +47,11 @@ mod tests {
 
         let mut config = HashMap::new();
         config.insert("password", pass.as_str());
-        let redis_opts = RedisOpts::Config(config);
-        let mut queue = Queue::<'_>::new("test", redis_opts, QueueOptions::default()).await?;
-
+        let redis_opts = RedisOpts::from_string_map(config);
+        let  queue = Queue::new("test", redis_opts, QueueOptions::default()).await?;
+        let mut client = queue.client.lock().await;
         let result: HashMap<String, String> =
-            queue.client.hgetall("bull:pinningQueue:207").await.unwrap();
+            client.hgetall("bull:pinningQueue:207").await.unwrap();
 
         let contents = if !result.is_empty() {
             serde_json::to_string(&result).unwrap_or("{}".to_string())
