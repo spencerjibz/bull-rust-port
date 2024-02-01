@@ -3,7 +3,7 @@
 // properties.
 use crate::redis_connection::RedisOpts;
 use crate::to_static_str;
-use crate::BoxedFn;
+use crate::StoredFn;
 pub use derive_redis_json::RedisJsonValue;
 use rand::prelude::*;
 use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
@@ -19,15 +19,20 @@ pub struct KeepJobs {
 pub struct JobOptions {
     pub priority: i64,
     pub job_id: Option<String>,
-    pub timestamp: Option<i64>, // timestamp when  the job was created
-    pub delay: i64,             // number of milliseconds to wait until this job can be processed
-    pub attempts: i64,          // total number of attempts to try the job until it completes.
+    pub timestamp: Option<i64>,
+    /// timestamp when  the job was created
+    pub delay: i64,
+    /// number of milliseconds to wait until this job can be processed
+    pub attempts: i64,
+    /// total number of attempts to try the job until it completes.
     pub remove_on_complete: RemoveOnCompletionOrFailure,
     pub remove_on_fail: RemoveOnCompletionOrFailure,
-    pub fail_parent_on_failure: bool, // if true, moves parent to failed
+    pub fail_parent_on_failure: bool,
+    /// if true, moves parent to failed
     pub stacktrace_limit: Option<usize>,
     pub backoff: (i64, Option<BackOffOptions>), //
-    pub lifo: bool, // if true, adds the job to the right of the queue instead of the left
+    pub lifo: bool,
+    /// if true, adds the job to the right of the queue instead of the left
     pub parent: Option<Parent>,
 }
 
@@ -115,7 +120,7 @@ pub struct MetricOptions {
 
 #[derive(Default, Clone)]
 pub struct QueueSettings {
-    pub backoff_strategy: Option<Arc<BoxedFn>>,
+    pub backoff_strategy: Option<Arc<StoredFn>>,
 }
 
 //implement fmt::Debug for QueueSettings
@@ -144,7 +149,7 @@ impl Default for WorkerOptions {
     }
 }
 
-#[derive(Debug, Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct QueueOptions {
     pub prefix: Option<&'static str>,
     pub settings: QueueSettings,
