@@ -74,7 +74,7 @@ impl<
         queue: &'a Queue,
         processor: C,
         opts: WorkerOptions,
-    ) -> Worker<'a, D, R>
+    ) -> Result<Worker<'a, D, R>>
     where
         C: Fn(D) -> F + Send + Sync + 'static,
         F: Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
@@ -83,11 +83,11 @@ impl<
         let con_string = to_static_str(opts.clone().connection);
         let redis_opts = RedisOpts::from_conn_str(con_string);
         let prefix = opts.clone().prefix;
-        let connection = RedisConnection::init(redis_opts).await.unwrap();
+        let connection = RedisConnection::init(redis_opts).await?;
         let scripts = script::Scripts::new(prefix, name.to_owned(), connection.pool.clone());
         let callback = move |data: D| processor(data).boxed();
 
-        Self {
+        let mut worker = Self {
             name,
             processing: Vec::new(),
             jobs: Arc::new(Mutex::new(HashSet::new())),
@@ -104,7 +104,13 @@ impl<
             scripts: Arc::new(Mutex::new(scripts)),
             stalled_check_timer: None,
             queue,
+        };
+
+        if worker.options.autorun {
+            worker.run().await?;
         }
+        // running worker could fail
+        Ok(worker)
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
