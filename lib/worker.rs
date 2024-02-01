@@ -16,17 +16,17 @@ use std::sync::Arc;
 use tokio::task::{self, JoinHandle};
 
 #[derive(Clone)]
-struct JobSetPair<'a, D, R>(Job<'a, D, R>, &'a str);
+struct JobSetPair<D, R>(Job<D, R>, &'static str);
 
-impl<'a, D, R> PartialEq for JobSetPair<'a, D, R> {
+impl<D, R> PartialEq for JobSetPair<D, R> {
     fn eq(&self, other: &Self) -> bool {
         self.1 == other.1
     }
 }
 
-impl<'a, D, R> Eq for JobSetPair<'a, D, R> {}
+impl<D, R> Eq for JobSetPair<D, R> {}
 
-impl<'a, D, R> std::hash::Hash for JobSetPair<'a, D, R> {
+impl<D, R> std::hash::Hash for JobSetPair<D, R> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.id.hash(state);
         self.1.hash(state);
@@ -38,20 +38,20 @@ type ProcessingHandle<R> = Arc<JoinHandle<anyhow::Result<R>>>;
 struct Worker<'a, D, R> {
     pub name: &'a str,
     pub connection: Arc<Pool>,
-    pub options: WorkerOptions,
-    emitter: AsyncEventEmitter,
+    pub options: Arc<WorkerOptions>,
+    emitter: Arc<Mutex<AsyncEventEmitter>>,
     pub timer: Option<Timer>,
     pub stalled_check_timer: Option<Timer>,
     pub closing: bool,
     pub closed: bool,
     running: bool,
-    scripts: Arc<Mutex<Scripts<'a>>>,
-    pub jobs: HashSet<JobSetPair<'a, D, R>>,
+    scripts: Arc<Mutex<Scripts>>,
+    pub jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
     pub processing: Vec<ProcessingHandle<R>>,
     pub prefix: String,
     force_closing: bool,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
-    pub queue: &'a Queue<'a>,
+    pub queue: &'a Queue,
 }
 
 // impl     Worker<'a, D, R>
@@ -69,9 +69,9 @@ impl<
             + Deserialize<'a>,
     > Worker<'a, D, R>
 {
-    pub async fn new<F, C>(
+    pub async fn init<F, C>(
         name: &'a str,
-        queue: &'a Queue<'a>,
+        queue: &'a Queue,
         processor: C,
         opts: WorkerOptions,
     ) -> Worker<'a, D, R>
@@ -84,16 +84,16 @@ impl<
         let redis_opts = RedisOpts::from_conn_str(con_string);
         let prefix = opts.clone().prefix;
         let connection = RedisConnection::init(redis_opts).await.unwrap();
-        let scripts = script::Scripts::new(to_static_str(prefix), name, connection.pool.clone());
+        let scripts = script::Scripts::new(prefix, name.to_owned(), connection.pool.clone());
         let callback = move |data: D| processor(data).boxed();
 
         Self {
             name,
             processing: Vec::new(),
-            jobs: HashSet::new(),
+            jobs: Arc::new(Mutex::new(HashSet::new())),
             connection: Arc::new(connection.pool),
-            options: opts.clone(),
-            emitter,
+            options: Arc::new(opts.clone()),
+            emitter: Arc::new(Mutex::new(emitter)),
             prefix: opts.clone().prefix,
             timer: None,
             force_closing: false,
@@ -107,24 +107,33 @@ impl<
         }
     }
 
-    async fn run(&'static mut self) -> anyhow::Result<()> {
+    async fn run(&mut self) -> anyhow::Result<()> {
         if self.running {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
 
-        let copy = Arc::new(Mutex::new(self.clone()));
+        let scripts = self.scripts.clone();
+        let options = self.options.clone();
+        let jobs = self.jobs.clone();
         let timer = Timer::new(self.options.lock_duration as u64 / 2, move || {
-            let mut worker = copy.clone();
+            let jobs = jobs.clone();
+            let options = options.clone();
+            let scripts = scripts.clone();
             async move {
-                worker.lock().await.extend_locks().await;
+                extend_locks(jobs, scripts, options).await;
             }
         });
 
-        let cp = Arc::new(Mutex::new(self.clone()));
+        let scripts = self.scripts.clone();
+        let emitter = self.emitter.clone();
+        let options = self.options.clone();
         let stalled_check_timer = Timer::new(self.options.stalled_interval as u64, move || {
-            let mut worker = cp.clone();
+            let scripts = scripts.clone();
+            let emitter = emitter.clone();
+            let options = options.clone();
+
             async move {
-                worker.lock().await.run_stalled_jobs().await;
+                run_stalled_jobs(scripts, emitter, options).await;
             }
         });
 
@@ -135,11 +144,10 @@ impl<
 
         let token = uuid::Uuid::new_v4().to_string();
         let stat_token = to_static_str(token);
-
+        let copy = self.jobs.clone();
+        let mut jobs = copy.lock().await;
         while !self.closed {
-            if self.jobs.is_empty()
-                && self.processing.len() < self.options.concurrency
-                && !self.closing
+            if jobs.is_empty() && self.processing.len() < self.options.concurrency && !self.closing
             {
                 //self.emitter.emit("drained", String::from("")).await;
                 let awaiting_job = self.get_next_job(stat_token).await?;
@@ -155,8 +163,8 @@ impl<
                 }
             }
 
-            if !self.jobs.is_empty() {
-                let jobs_to_process = self.jobs.clone().into_iter().map(|e| {
+            if !jobs.is_empty() {
+                let jobs_to_process = jobs.clone().into_iter().map(|e| {
                     let data = e.0.data;
                     let processor = self.processor.clone();
 
@@ -179,52 +187,14 @@ impl<
         Ok(())
     }
 
-    async fn run_stalled_jobs(&mut self) -> anyhow::Result<()> {
-        let mut scripts = self.scripts.lock().await;
-        let mut connection = self.connection.get().await?;
-
-        let mut result = scripts
-            .move_stalled_jobs_to_wait(
-                self.options.max_stalled_count,
-                self.options.stalled_interval,
-            )
-            .await?;
-        if let [Some(failed), Some(stalled)] = [result.first(), result.get(1)] {
-            for job_id in failed {
-                self.emitter.emit("failed", job_id.to_string());
-            }
-            for job_id in stalled {
-                self.emitter.emit("stalled", job_id.to_string());
-            }
-
-            return Ok(());
-        }
-        let e = anyhow::anyhow!("Error checking stalled jobs");
-        self.emitter
-            .emit("error", (e.to_string(), String::from("all")))
-            .await;
-        Err(e)
-    }
-
-    pub async fn extend_locks(&mut self) -> anyhow::Result<()> {
-        let jobs = self.jobs.clone();
-        let mut scripts = self.scripts.lock().await;
-        let mut connection = self.connection.get().await?;
-        for JobSetPair(job, token) in jobs {
-            scripts
-                .extend_lock(&job.id, token, self.options.lock_duration)
-                .await?;
-        }
-
-        Ok(())
-    }
     pub async fn process_job(
         &mut self,
-        mut job: Job<'a, D, R>,
-        token: &'a str,
+        mut job: Job<D, R>,
+        token: &'static str,
     ) -> anyhow::Result<Option<MoveToAciveResult>> {
-        self.jobs.insert(JobSetPair(job.clone(), token));
-
+        let mut jobs = self.jobs.lock().await;
+        jobs.insert(JobSetPair(job.clone(), token));
+        let mut emitter = self.emitter.lock().await;
         let callback = self.processor.clone();
         let data = job.data.clone();
 
@@ -256,42 +226,41 @@ impl<
                         let name = job.name;
                         let id = job.id.clone();
 
-                        self.emitter.emit("completed", (name, id, done));
-                        self.jobs.remove(&JobSetPair(job.clone(), token));
+                        emitter.emit("completed", (name, id, done));
+                        jobs.remove(&JobSetPair(job.clone(), token));
 
                         return Ok(end);
                     }
                     Ok(None)
                 } else {
                     let e = res.err().unwrap();
-                    self.emitter.emit("error", e.to_string());
-                    self.jobs.remove(&JobSetPair(job.clone(), token));
+                    emitter.emit("error", e.to_string());
+                    jobs.remove(&JobSetPair(job.clone(), token));
 
                     Err(anyhow!("Error processing job"))
                 }
             }
             Err(e) => {
-                self.emitter
-                    .emit("error", (e.to_string(), job.name, job.id.clone()));
+                emitter.emit("error", (e.to_string(), job.name, job.id.clone()));
 
                 if !self.force_closing {
                     println!("Error processing job: {}", e);
                     job.move_to_failed(e.to_string(), token, false).await?;
                     let name = job.name;
                     let id = job.id.clone();
-                    self.emitter.emit("failed", (name, id, e.to_string()));
+                    emitter.emit("failed", (name, id, e.to_string()));
                 }
-                self.jobs.remove(&JobSetPair(job.clone(), token));
+                jobs.remove(&JobSetPair(job.clone(), token));
                 Err(anyhow!("Error processing job"))
             }
         }
     }
 
-    pub async fn get_next_job(&mut self, token: &'a str) -> anyhow::Result<Option<Job<'a, D, R>>> {
+    pub async fn get_next_job(&mut self, token: &'a str) -> anyhow::Result<Option<Job<D, R>>> {
         let mut scripts = self.scripts.lock().await;
         let options = self.options.clone();
         let (mut job, mut job_id, mut limit_until, mut delay_until) =
-            scripts.move_to_active(token, options.clone()).await?;
+            scripts.move_to_active(token, &options.clone()).await?;
 
         // if there are no jobs in the waiting list, we keep waiting with BBPOPLPUSH;
 
@@ -315,7 +284,7 @@ impl<
 
             if let Some(id) = job_id {
                 (job, job_id, limit_until, delay_until) =
-                    scripts.move_to_active(token, options).await?;
+                    scripts.move_to_active(token, &options).await?;
             }
         }
 
@@ -368,20 +337,88 @@ impl<
         self.connection.close();
     }
 
-    pub fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
+    pub async fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.emitter.on(event, callback)
+        let mut emitter = self.emitter.lock().await;
+        emitter.on(event, callback)
     }
-    pub fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
+    pub async fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.emitter.once(event, callback)
+        let mut emitter = self.emitter.lock().await;
+        emitter.once(event, callback)
     }
+}
+
+async fn run_stalled_jobs(
+    scripts: Arc<Mutex<Scripts>>,
+    emit: Arc<Mutex<AsyncEventEmitter>>,
+    options: Arc<WorkerOptions>,
+) -> anyhow::Result<()> {
+    let con_string = to_static_str(options.connection.clone());
+    let mut emitter = emit.lock().await;
+    let mut redis_opts = RedisOpts::from_conn_str(con_string);
+
+    let conn = RedisConnection::init(redis_opts).await?;
+    let mut connection = conn.conn;
+    let mut scripts = scripts.lock().await;
+
+    let mut result = scripts
+        .move_stalled_jobs_to_wait(options.max_stalled_count, options.stalled_interval)
+        .await?;
+    if let [Some(failed), Some(stalled)] = [result.first(), result.get(1)] {
+        for job_id in failed {
+            emitter.emit("failed", job_id.to_string());
+        }
+        for job_id in stalled {
+            emitter.emit("stalled", job_id.to_string());
+        }
+
+        return Ok(());
+    }
+    let e = anyhow::anyhow!("Error checking stalled jobs");
+    emitter
+        .emit("error", (e.to_string(), String::from("all")))
+        .await;
+    Err(e)
+}
+async fn extend_locks<
+    'a,
+    D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize,
+    R: Send
+        + Sync
+        + Clone
+        + ToRedisArgs
+        + FromRedisValue
+        + Serialize
+        + std::fmt::Debug
+        + 'static
+        + Deserialize<'a>,
+>(
+    job_map: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
+    scripts: Arc<Mutex<Scripts>>,
+    options: Arc<WorkerOptions>,
+) -> anyhow::Result<()> {
+    let mut jobs = job_map.lock().await;
+    let con_string = to_static_str(options.connection.clone());
+    let mut redis_opts = RedisOpts::from_conn_str(con_string);
+
+    let conn = RedisConnection::init(redis_opts).await?;
+    let mut connection = conn.conn;
+    let mut scripts = scripts.lock().await;
+
+    for JobSetPair(job, token) in jobs.iter() {
+        scripts
+            .extend_lock(&job.id, token, options.lock_duration)
+            .await?;
+    }
+
+    Ok(())
 }
