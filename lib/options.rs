@@ -34,12 +34,15 @@ pub struct JobOptions {
     pub lifo: bool,
     /// if true, adds the job to the right of the queue instead of the left
     pub parent: Option<Parent>,
+    pub remove_deps_on_failure: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
 pub struct Parent {
     pub id: String,
     pub queue: String,
+    pub remove_deps_on_failure: bool,
+    pub fail_parent_on_failure: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -69,9 +72,9 @@ impl Default for JobOptions {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs_f32();
-        //dbg!("{} {}", id, timestamp);
+
         Self {
-            priority: 0,
+            priority: 1,
             timestamp: Some((timestamp * 1000.0).round() as i64),
             job_id: Some(id.to_string()),
             delay: 0,
@@ -83,8 +86,30 @@ impl Default for JobOptions {
             backoff: (0, None),
             lifo: false,
             parent: None,
+            remove_deps_on_failure: false,
         }
     }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveToFinishOpts {
+    pub keep_jobs: KeepJobs,
+    pub token: String,
+    pub attempts: i64,
+    pub attempts_made: i64,
+    pub max_metrics_size: i64,
+    pub fail_parent_on_failure: bool,
+    pub remove_deps_on_failure: bool,
+    pub limiter: Limiter,
+    pub lock_duration: i64,
+}
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMoveOpts {
+    pub token: String,
+    pub lock_duration: i64,
+    pub(crate) limiter: Option<Limiter>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -110,12 +135,12 @@ pub struct WorkerOptions {
 
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct Limiter {
-    max: i64,
-    duration: i64,
+    pub max: i64,
+    pub duration: i64,
 }
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct MetricOptions {
-    pub max_data_points: String,
+    pub max_data_points: i64,
 }
 
 #[derive(Default, Clone)]
@@ -207,7 +232,7 @@ impl JobJsonRaw {
                 "timestamp" => job.timestamp = v,
                 "failed_reason" | "failedReason" => job.failed_reason = v,
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_str(v)?,
-                "returnvalue" => job.return_value = v,
+                "returnvalue" | "returnedValue" | "returnedvalue" => job.return_value = v,
                 "parent" => job.parent = Some(v),
                 "rjk" => job.rjk = Some(v),
                 "finished_on" | "finishedOn" => job.finished_on = Some(v),
@@ -237,7 +262,8 @@ impl JobJsonRaw {
                     job.failed_reason = to_static_str(v.as_str().unwrap_or("").to_string())
                 }
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_value(v)?,
-                "returnvalue" | "return_value" | "returnValue" => {
+                "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
+                | "returnedValue" => {
                     job.return_value = to_static_str(v.as_str().unwrap_or("").to_string())
                 }
                 "parent" => {

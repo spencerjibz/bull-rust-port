@@ -36,6 +36,8 @@ pub struct Job<D, R> {
     pub discarded: bool,
     pub parent_key: Option<String>,
     pub parent: Option<Parent>,
+    pub token: &'static str,
+    pub remove_deps_on_failure: bool,
 }
 // implement Serialize for Job
 impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
@@ -73,9 +75,8 @@ impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
 
 //implement PartialEq for Job
 impl<
-        'a,
-        D: Deserialize<'a> + Serialize + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'a> + Serialize + FromRedisValue + Any + Send + Sync + Clone,
+        D: Deserialize<'static> + Serialize + Clone + std::fmt::Debug + Send + Sync,
+        R: Deserialize<'static> + Serialize + FromRedisValue + Any + Send + Sync + Clone,
     > PartialEq for Job<D, R>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -96,8 +97,11 @@ impl<
             + std::fmt::Debug,
     > Job<D, R>
 {
+    pub fn is_completed(&self) -> bool {
+        self.return_value.is_some() && self.finished_on > 0
+    }
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
-        self.progress = serde_json::to_string(&progress).unwrap();
+        self.progress = serde_json::to_string(&progress)?;
         self.scripts
             .lock()
             .await
@@ -111,26 +115,32 @@ impl<
         name: &str,
         queue: &Queue,
         data: D,
+
         opts: JobOptions,
+        job_id: Option<String>,
     ) -> anyhow::Result<Job<D, R>> {
         let prefix = &queue.prefix;
         let queue_name = &queue.name;
         let dup_conn = queue.manager.pool.clone();
         let conn_str = queue.manager.to_conn_string();
-        let mut opt = opts.clone();
+        let mut opts_copy = opts.clone();
 
         let parent = opts.parent;
 
         let parent_key = parent.clone().map(|v| format!("{}:{}", &v.queue, &v.id));
-        let id = opts.job_id.unwrap();
+        let id = if let Some(id) = job_id {
+            id
+        } else {
+            opts.job_id.unwrap()
+        };
         let que = queue.clone();
 
         Ok(Self {
-            opts: opt,
+            opts: opts_copy,
             queue: Arc::new(que),
             name: to_static_str(name.to_string()),
             id,
-            progress: String::default(),
+            progress: String::new(),
             timestamp: opts.timestamp.unwrap(),
             delay: opts.delay,
             attempts_made: 0,
@@ -152,53 +162,72 @@ impl<
             parent_key,
             discarded: false,
             parent,
+            token: "",
+            remove_deps_on_failure: false,
         })
     }
-
+    pub async fn from_map(
+        mut queue: &Queue,
+        map: HashMap<String, String>,
+        job_id: &str,
+    ) -> anyhow::Result<Self> {
+        let mut obj = JobJsonRaw::from_map(map)?;
+        Self::from_raw_job(&mut obj, queue, job_id).await
+    }
     pub async fn from_json(
-        mut queue: &'a Queue,
+        mut queue: &Queue,
         raw_string: String,
-        job_id: &'a str,
+        job_id: &str,
     ) -> anyhow::Result<Job<D, R>> {
-        // use serde_json to convert to job;
-        //println!("raw_string: {:?}", raw_string);
-
-        let json = JobJsonRaw::fromStr(raw_string)?;
-
+        let mut json = JobJsonRaw::fromStr(raw_string)?;
+        Self::from_raw_job(&mut json, queue, job_id).await
+    }
+    pub fn opts_from_json(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
+        let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
+        Ok(opts)
+    }
+    pub async fn from_raw_job(
+        json: &mut JobJsonRaw,
+        queue: &Queue,
+        job_id: &str,
+    ) -> anyhow::Result<Self> {
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
 
-        let d = json.data;
+        let d = to_static_str(json.data.to_owned());
         let data = serde_json::from_str::<D>(d)?;
 
-        let mut job = Self::new(name, queue, data, opts).await?;
+        let mut job = Self::new(name, queue, data, opts, None).await?;
         job.id = job_id.to_string();
         job.progress = json.progress.to_string();
-        job.attempts_made = json.attempts_made.parse::<i64>().unwrap_or_default();
-        job.timestamp = json.timestamp.parse::<i64>()?;
-        job.delay = json.delay.parse::<i64>()?;
+        job.attempts_made = json.attempts_made.parse().unwrap_or_default();
+        job.timestamp = json.timestamp.parse().unwrap_or_default();
+        job.delay = json.delay.parse().unwrap_or_default();
         if !json.return_value.is_empty() {
-            let return_value = serde_json::from_str::<R>(json.return_value)?;
+            let data = to_static_str(json.return_value.to_string());
+            let return_value = serde_json::from_str::<R>(data)?;
             job.return_value = Some(return_value);
         }
         job.finished_on = json
             .finished_on
-            .unwrap_or(&String::from("0"))
-            .parse::<i64>()?;
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or_default();
         job.processed_on = json
             .processed_on
-            .unwrap_or(&String::from("0"))
-            .parse::<i64>()?;
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or_default();
         job.failed_reason = Some(json.failed_reason.to_string());
 
         job.repeat_job_key = json.rjk;
 
-        job.stack_trace = json.stack_trace;
+        job.stack_trace = json.stack_trace.clone();
 
         job.parent = None;
         job.parent_key = None;
 
-        if let Some(value) = json.parent {
+        if let Some(value) = &json.parent {
             let parent: Parent = serde_json::from_str(value)?;
 
             let parent_key = format!("{}:{}", parent.queue, parent.id);
@@ -209,15 +238,7 @@ impl<
 
         Ok(job)
     }
-    pub fn opts_from_json(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
-        let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
-        Ok(opts)
-    }
-
-    pub async fn from_id<'c>(
-        queue: &'a Queue,
-        job_id: &'c str,
-    ) -> anyhow::Result<Option<Job<D, R>>> {
+    pub async fn from_id(queue: &Queue, job_id: &str) -> anyhow::Result<Option<Job<D, R>>> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
         let mut conn = queue.manager.pool.clone().get().await?;
@@ -376,12 +397,7 @@ impl<
 }
 
 // implement fmt::Debug for Job;
-impl<
-        'a,
-        D: Deserialize<'a> + Clone + Serialize + std::fmt::Debug,
-        R: Deserialize<'a> + Serialize + std::fmt::Debug,
-    > std::fmt::Debug for Job<D, R>
-{
+impl<D: std::fmt::Debug, R: std::fmt::Debug> std::fmt::Debug for Job<D, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
             .field("name", &self.name)

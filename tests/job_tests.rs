@@ -29,9 +29,14 @@ mod job {
     async fn creating_a_new_job() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
 
-        let job =
-            Job::<String, String>::new("test", queue, "test".to_string(), JobOptions::default())
-                .await?;
+        let job = Job::<String, String>::new(
+            "test",
+            queue,
+            "test".to_string(),
+            JobOptions::default(),
+            None,
+        )
+        .await?;
         assert_eq!(job.name, "test");
 
         Ok(())
