@@ -33,10 +33,15 @@ rmp-serde = "1.1.2"
 rmpv = "1.0.1"
 faker = { version = "0.0.4", optional = true }
 dotenv = "0.15.0"
+async-recursion = "1.0.5"
+redis-derive = "0.1.7"
+redis-json = "0.0.1-beta-1"
+console-subscriber = "0.2.0"
+
 
 
 # standard crate data is left out
 [dev-dependencies]
 async-lazy = { version = "0.1.0", features = ["parking_lot"]}
 tokio-shared-rt = "0.1.0"
-
+lazy_static = "1.4.0"
