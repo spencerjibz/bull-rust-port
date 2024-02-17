@@ -214,7 +214,7 @@ pub async fn add_job_to_queue(
     data: String,
     job_opts: &JobOptions,
     con: &mut Connection,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<Option<i64>> {
     let opts = job_opts;
     let mut parent_data: String = "".to_owned();
     let mut job_id = "".to_owned();
@@ -242,7 +242,7 @@ pub async fn add_job_to_queue(
     if let Some(key) = parent_key.as_ref() {
         let key_exists: isize = Cmd::exists(key).query_async(con).await?;
         if key_exists == 0 {
-            return Ok(-5);
+            return Ok(Some(-5));
         }
         parent_data = serde_json::to_string(&parent)?;
     }
@@ -262,7 +262,6 @@ pub async fn add_job_to_queue(
             if !zscore.is_empty() {
                 let return_value: String = Cmd::hget(&job_id_key, "returnvalue")
                     .query_async(con)
-                    
                     .await?;
                 let parent_obj = parent.as_ref().unwrap();
                 let timestamp_str = timestamp.to_string();
@@ -292,7 +291,8 @@ pub async fn add_job_to_queue(
         }
         let items = [("event", "duplicated"), ("jobId", &job_id)];
         Cmd::xadd(&keys[7], "*", &items).query_async(con).await?;
-        return Ok(job_id.parse::<i64>().unwrap_or_default());
+
+        return Ok(Some(job_id.parse::<i64>().unwrap_or_default()));
     }
     // store the job
     let json_opts = serde_json::to_string(opts)?;
@@ -372,5 +372,5 @@ pub async fn add_job_to_queue(
             .query_async(con)
             .await?;
     }
-    Ok(job_id.parse::<i64>().unwrap_or_default())
+    Ok(Some(job_id.parse::<i64>().unwrap_or_default()))
 }
