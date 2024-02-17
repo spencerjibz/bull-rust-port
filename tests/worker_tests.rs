@@ -23,8 +23,8 @@ mod worker {
     use uuid::Uuid;
     lazy_static! {
         static ref QUEUE_NAME: String = {
-           // let token = Uuid::new_v4().to_string();
-            "_test_queue".to_string()
+            let token = Uuid::new_v4().to_string();
+            format!("_test_queue{token}")
         };
     }
     static QUEUE: Lazy<Queue> = Lazy::const_new(|| {
@@ -58,16 +58,14 @@ mod worker {
             .await?;
 
         let processor = |_data: JobSetPair<JobDataType, String>| async move {
-            // println!(" processing job {:#?}", data.0);
+            //  println!(" processing job {:#?}", data.0);
 
-            //tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
 
             anyhow::Ok("done".to_owned())
         };
         let now = Instant::now();
         let mut worker = Worker::init(&QUEUE_NAME, queue, processor, worker_opts, None).await?;
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         for _ in 0..5 {
             let random_name = Uuid::new_v4().to_string();
@@ -84,7 +82,8 @@ mod worker {
         worker
             .on(
                 "completed",
-                move |(completed_name, id, returned_value): (String, String, String)| {
+                move |(_completed_name, _id, returned_value): (String, String, String)| {
+                    dbg!(_completed_name);
                     //assert_eq!(id, old_id);
                     assert_eq!(returned_value, "done");
                     //
@@ -98,9 +97,11 @@ mod worker {
             )
             .await;
 
+        // tokio::time::sleep(Duration::from_secs(2)).await;
+
         worker.run().await?;
-        worker.close(true);
-        queue.close().await;
+        //worker.close(true);
+        //queue.close().await;
 
         Ok(())
     }
