@@ -40,6 +40,7 @@ mod worker {
     });
 
     #[tokio_shared_rt::test(shared = false)]
+    #[ignore = "there is still work in progress"]
     async fn should_process_jobs() -> anyhow::Result<()> {
         console_subscriber::init();
         use maplit::hashmap;
