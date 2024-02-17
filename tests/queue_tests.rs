@@ -39,7 +39,7 @@ mod queue {
         let job_opts = JobOptions::default();
         let id = job_opts.job_id.clone().unwrap();
 
-        let job: Job<Data, String> = queue.add("test", data, job_opts,None).await?;
+        let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
 
         assert_eq!(job.id, id.clone());
         // cleanup
@@ -65,7 +65,7 @@ mod queue {
 
         job_opts.delay = 1000;
 
-        let job: Job<Data, String> = queue.add("test", data, job_opts,None).await?;
+        let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
 
         assert_eq!(job.id, id.clone());
         assert_eq!(job.opts.attempts, 3);
@@ -91,7 +91,7 @@ mod queue {
         let job_opts = JobOptions::default();
         let id = job_opts.job_id.clone().unwrap();
 
-        let job: Job<Data, String> = queue.add("test", data, job_opts,None).await?;
+        let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
 
         queue.remove_job(id.clone(), false).await?;
         let result: Option<Job<Data, String>> = Job::from_id(queue, &job.id).await?;
@@ -114,7 +114,7 @@ mod queue {
         };
         let job_opts = JobOptions::default();
 
-        let job: Job<Data, String> = queue.add("test", data, job_opts,None).await?;
+        let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
         let state = queue.get_job_state(&job.id).await?;
 
         assert_eq!(state, "waiting".to_string());
@@ -149,13 +149,13 @@ mod queue {
         // add multiple jobs
 
         let _job1: Job<String, String> = queue
-            .add("test", "1".to_ascii_lowercase(), job_opts.clone(),None)
+            .add("test", "1".to_ascii_lowercase(), job_opts.clone(), None)
             .await?;
         let _job2: Job<String, String> = queue
-            .add("test", "2".to_ascii_lowercase(), job_opts.clone(),None)
+            .add("test", "2".to_ascii_lowercase(), job_opts.clone(), None)
             .await?;
         let _job3: Job<String, String> = queue
-            .add("test", "3".to_ascii_lowercase(), job_opts,None)
+            .add("test", "3".to_ascii_lowercase(), job_opts, None)
             .await?;
 
         let events_length: isize = redis::cmd("XLEN")

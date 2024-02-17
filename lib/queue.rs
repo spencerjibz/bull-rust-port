@@ -72,7 +72,6 @@ impl Queue {
         let mut scripts = self.scripts.lock().await;
         let job_id = scripts.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
-        
 
         Ok(job)
     }
