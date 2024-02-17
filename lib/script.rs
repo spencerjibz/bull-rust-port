@@ -100,7 +100,7 @@ impl Scripts {
             redis_version: String::new(),
         }
     }
-    fn to_key(&self, name: &str) -> String {
+    pub fn to_key(&self, name: &str) -> String {
         if name.is_empty() {
             return format!("{}:{}", self.prefix, self.queue_name);
         }
@@ -149,7 +149,7 @@ impl Scripts {
     pub async fn add_job<'s, D: Serialize + Clone + Deserialize<'s>, R: FromRedisValue>(
         &mut self,
         job: &Job<D, R>,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<Option<i64>> {
         let e = job.queue.prefix.to_owned();
         let prefix = self.keys.get("").unwrap_or(&e);
         let name = job.name;
@@ -493,7 +493,7 @@ impl Scripts {
         max_stalled_count: i64,
         stalled_interval: i64,
     ) -> anyhow::Result<Vec<Vec<String>>> {
-        let stalled = self.to_key("");
+        let prefix = self.to_key("");
         let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
             "stalled",
@@ -513,7 +513,7 @@ impl Scripts {
             .unwrap()
             .key(keys)
             .arg(max_stalled_count)
-            .arg(stalled)
+            .arg(prefix)
             .arg(timestamp)
             .arg(stalled_interval)
             .invoke_async(conn)
@@ -798,6 +798,7 @@ pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinis
             // convert the length to a a raw job;
             if let Some(vec_list) = list {
                 let map = map_from_vec(&vec_list);
+
                 let json = JobJsonRaw::from_map(map)?;
                 job = Some(json);
             }
