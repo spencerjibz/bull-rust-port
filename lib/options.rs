@@ -121,7 +121,7 @@ pub struct RetryJobOptions {
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
-    pub concurrency: usize, // number of parallel jobs per worker, default: 1
+    pub concurrency: usize, // number of parallel jobs per worker, default: No of cpus/2
     pub max_stalled_count: i64, // n of jobs to be recovered from stalled state, default:1
     pub stalled_interval: i64, // milliseconds between stallness checks, default 30000
     pub lock_duration: i64, // Duration of lock for job in milliseconds, default: 30000
@@ -160,7 +160,7 @@ impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
             autorun: true,
-            concurrency: 1,
+            concurrency: num_cpus::get() / 2,
             max_stalled_count: 1,
             stalled_interval: 30000,
             lock_duration: 30000,
@@ -232,7 +232,8 @@ impl JobJsonRaw {
                 "timestamp" => job.timestamp = v,
                 "failed_reason" | "failedReason" => job.failed_reason = v,
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_str(v)?,
-                "returnvalue" | "returnedValue" | "returnedvalue" => job.return_value = v,
+                "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
+                | "returnedValue" => job.return_value = v,
                 "parent" => job.parent = Some(v),
                 "rjk" => job.rjk = Some(v),
                 "finished_on" | "finishedOn" => job.finished_on = Some(v),
