@@ -48,6 +48,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
 
 [[package]]
+name = "async-atomic"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66f2b172111ac0a2743b0c5a2d9caeb537a7ef297a337c0d8c2e80988cd9e7cb"
+dependencies = [
+ "atomic",
+ "futures",
+]
+
+[[package]]
 name = "async-event-emitter"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -115,6 +125,12 @@ dependencies = [
  "quote",
  "syn 2.0.48",
 ]
+
+[[package]]
+name = "atomic"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c59bdb34bc650a32731b31bd8f0829cc15d24a708ee31559e0bb34f2bc320cba"
 
 [[package]]
 name = "autocfg"
@@ -208,6 +224,7 @@ name = "bull-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-atomic",
  "async-event-emitter",
  "async-lazy",
  "async-recursion",
@@ -222,6 +239,7 @@ dependencies = [
  "futures",
  "lazy_static",
  "maplit",
+ "num_cpus",
  "rand 0.8.5",
  "redis 0.23.3",
  "redis-derive",

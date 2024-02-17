@@ -37,6 +37,8 @@ async-recursion = "1.0.5"
 redis-derive = "0.1.7"
 redis-json = "0.0.1-beta-1"
 console-subscriber = "0.2.0"
+async-atomic = "0.1.4"
+num_cpus = "1.16.0"
 
 
 
