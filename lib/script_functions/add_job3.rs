@@ -400,6 +400,7 @@ async fn add_delay_marker_if_needed(
     delayed_key: &str,
 ) -> Result<()> {
     let wait_len: i64 = Cmd::llen(target_key).query_async(con).await?;
+    dbg!(wait_len);
     if wait_len <= 1 {
         if let Some(next_timestamp) = get_next_delayed_timestamp(con, delayed_key).await? {
             if wait_len == 1 {

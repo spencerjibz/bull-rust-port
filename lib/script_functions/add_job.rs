@@ -1,4 +1,4 @@
-use std::{collections::HashMap, vec};
+use std::{collections::HashMap, fmt::format, vec};
 
 use crate::*;
 
@@ -15,7 +15,6 @@ pub async fn get_next_delayed_timestamp(
     let mut result: Vec<(String, i64)> = Cmd::zrange_withscores(delayed_key, 0, 0)
         .query_async(con)
         .await?;
-
     if let Some((_, mut next_time_stamp)) = result.first() {
         next_time_stamp /= 0x1000;
         return Ok(Some(next_time_stamp));
@@ -27,18 +26,28 @@ pub async fn add_delay_marker_if_needed(
     target: String,
     delayed_key: String,
     con: &mut Connection,
-) -> anyhow::Result<Option<isize>> {
+) -> anyhow::Result<()> {
     let llen_result: i64 = Cmd::llen(&target).query_async(con).await?;
-    if llen_result == 0 {
+    if llen_result <= 0 {
         let next_time_stamp = get_next_delayed_timestamp(&delayed_key, con).await?;
         if let Some(time_stamp) = next_time_stamp {
-            let pushed_result_index: isize = Cmd::lpush(target, format!("0:{time_stamp}"))
-                .query_async(con)
-                .await?;
-            return Ok(Some(pushed_result_index));
+            if llen_result == 1 {
+                let marker: String = Cmd::lindex(&target, 0).query_async(con).await?;
+
+                let old_timestamp: i64 = marker[2..].parse()?;
+                if old_timestamp > time_stamp {
+                    Cmd::lset(&target, 0, format!("0:{time_stamp}"))
+                        .query_async(con)
+                        .await?
+                }
+            } else {
+                let pushed_result_index: isize = Cmd::lpush(target, format!("0:{time_stamp}"))
+                    .query_async(con)
+                    .await?;
+            }
         }
     }
-    Ok(None)
+    Ok(())
 }
 /// add a job considering its priority
 pub async fn add_job_with_priority(
@@ -77,15 +86,14 @@ pub async fn get_target_queue_list(
     wait_key: &str,
     paused_key: &str,
     con: &mut Connection,
-) -> String {
-    let exists: isize = Cmd::hexists(queue_meta_key, "paused")
+) -> anyhow::Result<(String, bool)> {
+    let exists: bool = Cmd::hexists(queue_meta_key, "paused")
         .query_async(con)
-        .await
-        .unwrap();
-    if exists != 1 {
-        return wait_key.to_owned();
+        .await?;
+    if !exists {
+        return Ok((wait_key.to_owned(), false));
     }
-    paused_key.to_owned()
+    Ok((paused_key.to_owned(), true))
 }
 
 async fn trim_events(
@@ -144,13 +152,13 @@ async fn update_parent_deps_if_needed(
         Cmd::zrem(format!("{parent_queue_key}:waiting-children"), parent_id)
             .query_async(con)
             .await?;
-        let parent_target = get_target_queue_list(
+        let (parent_target, _) = get_target_queue_list(
             &format!("{parent_queue_key}:meta"),
             &format!("{parent_queue_key}:wait"),
             &format!("{parent_queue_key}:paused"),
             con,
         )
-        .await;
+        .await?;
 
         let job_attributes: Vec<String> = Cmd::hset_multiple(parent_key, &[("priority", "delay")])
             .query_async(con)
@@ -165,6 +173,18 @@ async fn update_parent_deps_if_needed(
             let parent_delayed_key = format!("{parent_queue_key}:delayed");
 
             Cmd::zadd(&parent_delayed_key, parent_id, score)
+                .query_async(con)
+                .await?;
+
+            redis::cmd("XADD")
+                .arg(format!("{}:events", parent_queue_key))
+                .arg("*")
+                .arg("event")
+                .arg("delayed")
+                .arg("jobId")
+                .arg(parent_id)
+                .arg("delay")
+                .arg(delayed_timestamp)
                 .query_async(con)
                 .await?;
             add_delay_marker_if_needed(parent_target, parent_delayed_key, con).await?;
@@ -235,6 +255,10 @@ pub async fn add_job_to_queue(
     let parent_key: Option<String> = args.get("parent_key").cloned();
     let parent_dep_key: Option<String> = args.get("parent_key").cloned();
     let repeat_job_key: Option<String> = args.get("rjk").cloned();
+    let max_events: i32 = Cmd::hget(&keys[2], "opts.maxLenEvents")
+        .query_async(con)
+        .await
+        .unwrap_or(10000);
     let mut parent: Option<Parent> = args
         .get("parent_data")
         .map(|e| serde_json::from_str(e).unwrap());
@@ -325,13 +349,17 @@ pub async fn add_job_to_queue(
     Cmd::xadd(&keys[7], "*", &args).query_async(con).await?;
     // check if the job is delayed
     let delayed_timestamp = if delay > 0 { timestamp + delay } else { 0 };
+    use redis::streams::StreamMaxlen;
+    let max_len = StreamMaxlen::Approx(max_events as usize);
     // check if job is a  parent, if so add to the parents set
     if let Some(with_children_key) = with_children_key {
         Cmd::zadd(&with_children_key, &job_id, timestamp)
             .query_async(con)
             .await?;
         let items = [("event", "waiting-children"), ("jobId", &job_id)];
-        Cmd::xadd(&keys[7], "*", &items).query_async(con).await?;
+        Cmd::xadd_maxlen(&keys[7], max_len, "*", &items)
+            .query_async(con)
+            .await?;
     } else if delayed_timestamp != 0 {
         let score = delayed_timestamp.wrapping_mul(0x1000) + (job_counter & 0xfff);
         Cmd::zadd(&keys[4], &job_id, score).query_async(con).await?;
@@ -341,10 +369,11 @@ pub async fn add_job_to_queue(
             ("delay", &delayed_timestamp.to_string()),
         ];
         Cmd::xadd(&keys[7], "*", &items).query_async(con).await?;
-        let target = get_target_queue_list(&keys[2], &keys[0], &keys[1], con).await;
+        let (target, _) = get_target_queue_list(&keys[2], &keys[0], &keys[1], con).await?;
+
         add_delay_marker_if_needed(target, keys[4].clone(), con).await?;
     } else {
-        let target = get_target_queue_list(&keys[2], &keys[0], &keys[1], con).await;
+        let (target, paused) = get_target_queue_list(&keys[2], &keys[0], &keys[1], con).await?;
         // standard or priority add
         if priority == 0 {
             // LIFO or FIFO
@@ -358,9 +387,15 @@ pub async fn add_job_to_queue(
             add_job_with_priority(&keys[5], priority, &target, &job_id, con).await?;
         }
         // emit waiting event
-        Cmd::xadd(&keys[7], "*", &[("event", "waiting"), ("jobId", &job_id)])
-            .query_async(con)
-            .await?;
+
+        Cmd::xadd_maxlen(
+            &keys[7],
+            max_len,
+            "*",
+            &[("event", "waiting"), ("jobId", &job_id)],
+        )
+        .query_async(con)
+        .await?;
     }
     /*
         -- Check if this job is a child of another job, if so add it to the parents dependencies

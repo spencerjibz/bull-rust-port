@@ -16,6 +16,7 @@ pub struct KeepJobs {
     pub count: Option<i64>, // Maximum Number of jobs to keep
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct JobOptions {
     pub priority: i64,
     pub job_id: Option<String>,
@@ -38,6 +39,7 @@ pub struct JobOptions {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Parent {
     pub id: String,
     pub queue: String,
@@ -46,6 +48,7 @@ pub struct Parent {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepeatOpts {
     pub pattern: String,
     pub limit: i64,
@@ -58,6 +61,7 @@ pub struct RepeatOpts {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoveOnCompletionOrFailure {
     pub bool: bool, // if true, remove the job when it completes
     pub int: i64,   //  number is passed, its specifies the maximum amount of jobs to keeps
@@ -74,7 +78,7 @@ impl Default for JobOptions {
             .as_secs_f32();
 
         Self {
-            priority: 1,
+            priority: 0,
             timestamp: Some((timestamp * 1000.0).round() as i64),
             job_id: Some(id.to_string()),
             delay: 0,
@@ -119,6 +123,7 @@ pub struct RetryJobOptions {
     pub timestamp: i64,
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
     pub concurrency: usize, // number of parallel jobs per worker, default: No of cpus/2
@@ -134,6 +139,7 @@ pub struct WorkerOptions {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+
 pub struct Limiter {
     pub max: i64,
     pub duration: i64,
@@ -158,12 +164,13 @@ impl fmt::Debug for QueueSettings {
 
 impl Default for WorkerOptions {
     fn default() -> Self {
+        let cpu_count = num_cpus::get() / 2;
         Self {
-            autorun: true,
-            concurrency: num_cpus::get() / 2,
+            autorun: false,
+            concurrency: cpu_count,
             max_stalled_count: 1,
-            stalled_interval: 30000,
-            lock_duration: 30000,
+            stalled_interval: 3000,
+            lock_duration: 3000,
             prefix: "".to_string(),
             connection: "redis://localhost:6379".to_ascii_lowercase(),
             limiter: Limiter::default(),

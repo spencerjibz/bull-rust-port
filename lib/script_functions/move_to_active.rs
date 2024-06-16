@@ -2,7 +2,7 @@ use core::time;
 use std::{collections::HashMap, fmt::format};
 
 use crate::*;
-use crate::{add_job3::get_next_delayed_timestamp, functions::add_job3::add_job_with_priority};
+use crate::{add_job3::get_next_delayed_timestamp, script_functions::add_job3::add_job_with_priority};
 use anyhow::{Ok, Result};
 use deadpool_redis::Connection;
 use redis::{Cmd, Value};
@@ -130,12 +130,14 @@ pub async fn promote_delayed_jobs(
         Cmd::zrangebyscore_limit(delayed_key, 0, (timestamp + 1) * 0x1000, 0, limit)
             .query_async(con)
             .await?;
+    dbg!(&jobs, delayed_key);
+
     if !jobs.is_empty() {
         Cmd::zrem(delayed_key, &jobs).query_async(con).await?;
         for job_id in jobs.iter() {
-            let priority: i64 = Cmd::hget(format!("{prefix}{job_id}"), "priority")
-                .query_async(con)
-                .await?;
+            let job_key = format!("{prefix}:{job_id}");
+            dbg!(&job_key);
+            let priority: i64 = Cmd::hget(job_key, "priority").query_async(con).await?;
 
             if priority == 0 {
                 Cmd::lpush(target_key, job_id).query_async(con).await?;
@@ -157,7 +159,7 @@ pub async fn promote_delayed_jobs(
                 .query_async(con)
                 .await?;
 
-            Cmd::hset(format!("{prefix}{job_id}"), "delay", 0)
+            Cmd::hset(format!("{prefix}:{job_id}"), "delay", 0)
                 .query_async(con)
                 .await?;
         }
@@ -357,6 +359,8 @@ pub async fn prepare_job_for_processing(
     }
 
     let job_data: Vec<String> = Cmd::hgetall(job_key).query_async(con).await?;
+
+    dbg!(&job_data, move_to_finish);
     Ok((Some(job_data), Some(job_id.to_owned()), 0, None))
 }
 
@@ -381,13 +385,13 @@ pub async fn move_job_from_priority_to_active(
     priority_counter_key: &str,
     con: &mut Connection,
 ) -> Result<Option<String>> {
-    let prioritized_job: Vec<String> = Cmd::zpopmin(priority_key, 1).query_async(con).await?;
+    let prioritized_jobs: Vec<String> = Cmd::zpopmin(priority_key, 1).query_async(con).await?;
 
-    if !prioritized_job.is_empty() {
-        Cmd::lpush(active_key, &prioritized_job[0])
+    if !prioritized_jobs.is_empty() {
+        Cmd::lpush(active_key, &prioritized_jobs[0])
             .query_async(con)
             .await?;
-        Ok(Some(prioritized_job[0].clone()))
+        Ok(Some(prioritized_jobs[0].clone()))
     } else {
         Cmd::del(priority_counter_key).query_async(con).await?;
         Ok(None)

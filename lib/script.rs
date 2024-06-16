@@ -1,12 +1,13 @@
 #![allow(clippy::too_many_arguments)]
 use crate::add_job::add_job_to_queue;
 use crate::add_job3::add_job_to_queue_3;
+use crate::move_stalled::move_stalled_jobs;
 use crate::move_to_active::move_job_to_active;
 use crate::move_to_finished::{move_job_to_finished, MoveToFinishedArgs};
 use crate::worker::{map_from_string, map_from_vec};
 //use crate::move_to_finished::{self, move_job_to_finished};
 use crate::{
-    functions, job, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter, MoveToFinishOpts,
+    script_functions, job, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter, MoveToFinishOpts,
     WorkerOptions,
 };
 use crate::{job::Job, redis_connection::*};
@@ -17,12 +18,10 @@ use futures::{future::ok, stream::TryFilterMap};
 use maplit::hashmap;
 pub use redis::Script;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
-use rmp::decode::bytes;
-use rmp::encode;
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, time};
-pub type ScriptCommands = HashMap<&'static str, Script>;
+type ScriptCommands = HashMap<&'static str, Script>;
 use crate::enums::ErrorCode::{self, *};
 use crate::redis_connection::*;
 use std::any::{self, Any};
@@ -492,7 +491,7 @@ impl Scripts {
         &mut self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
         let prefix = self.to_key("");
         let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
@@ -506,7 +505,6 @@ impl Scripts {
             "events",
         ]);
         let conn = &mut self.connection.get().await?;
-
         let result = self
             .commands
             .get("moveStalledJobsToWait")
@@ -518,8 +516,20 @@ impl Scripts {
             .arg(stalled_interval)
             .invoke_async(conn)
             .await?;
+        /*
 
-        println!(" stalled {result:?}");
+           let result = check_stalled_jobs(
+            &keys,
+            max_stalled_count as usize,
+            &prefix,
+            timestamp,
+            stalled_interval,
+            con,
+        )
+        .await?;
+
+            */
+        // println!(" stalled {result:?}");
         Ok(result)
     }
     pub async fn update_progress<P: Serialize>(

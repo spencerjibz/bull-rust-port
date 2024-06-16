@@ -17,10 +17,12 @@ async fn main() -> anyhow::Result<()> {
     let contents = if !result.is_empty() {
         serde_json::to_string(&result).unwrap_or("{}".to_string())
     } else {
-        tokio::fs::read_to_string("test.json").await?
+        std::fs::read_to_string("test.json")?
     };
+    let job_parsing_time = Instant::now();
     let queue = Queue::new("test", redis_opts, QueueOptions::default()).await?;
     let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "207").await?;
+    println!("{:#?}", job_parsing_time.elapsed());
     println!("{:#?}", job);
     use chrono::{DateTime, NaiveDateTime, Utc};
     let (finished_on, processed_on, date) = (job.finished_on, job.processed_on, job.timestamp);

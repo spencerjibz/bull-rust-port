@@ -1,6 +1,6 @@
 use crate::convert_errors;
-use crate::functions::add_job3::*;
-use crate::functions::move_to_active::*;
+use crate::script_functions::add_job3::*;
+use crate::script_functions::move_to_active::*;
 use crate::MoveToAciveResult;
 use crate::MoveToFinishedResult;
 use crate::Parent;
@@ -19,7 +19,7 @@ use std::{collections::HashMap, path::Ancestors};
 /// Just a bit of warning, some commands as ZREM
 ///could receive a maximum of 7000 parameters per call.
 
-fn batches(n: usize, batch_size: usize) -> impl Iterator<Item = (usize, usize)> {
+pub fn batches(n: usize, batch_size: usize) -> impl Iterator<Item = (usize, usize)> {
     (0..).scan(0, move |state, _| {
         let from = *state * batch_size + 1;
         *state += 1;
@@ -85,7 +85,7 @@ async fn collect_metrics(
     Ok(())
 }
 
-async fn move_parent_to_wait(
+pub async fn move_parent_to_wait(
     parent_prefix: &str,
     parent_id: &str,
     emit_event: bool,
@@ -117,7 +117,12 @@ async fn move_parent_to_wait(
     Ok(())
 }
 
-async fn remove_job(job_id: &str, hard: bool, base_key: &str, con: &mut Connection) -> Result<()> {
+pub async fn remove_job(
+    job_id: &str,
+    hard: bool,
+    base_key: &str,
+    con: &mut Connection,
+) -> Result<()> {
     let job_key = format!("{}{}", base_key, job_id);
     remove_parent_dependency_key(&job_key, hard, None, base_key, con);
     Cmd::del(&[
@@ -133,7 +138,7 @@ async fn remove_job(job_id: &str, hard: bool, base_key: &str, con: &mut Connecti
 }
 
 ///   Functions to remove jobs by max count.
-async fn remove_jobs_by_max_age(
+pub async fn remove_jobs_by_max_age(
     timestamp: i64,
     max_age: i64,
     target_set: &str,
@@ -153,7 +158,7 @@ async fn remove_jobs_by_max_age(
     Ok(())
 }
 
-async fn remove_jobs_by_max_count(
+pub async fn remove_jobs_by_max_count(
     max_count: isize,
     target_set: &str,
     prefix: &str,
@@ -487,7 +492,7 @@ pub async fn move_job_to_finished(
         let pending_deps_count: i64 = Cmd::scard(&format!("{}:dependencies", job_id_key))
             .query_async(con)
             .await?;
-        if pending_deps_count > 0 {
+        if pending_deps_count != 0 {
             return Ok((None, None, -4, None));
         }
 
@@ -565,7 +570,7 @@ pub async fn move_job_to_finished(
             }
         }
 
-        if max_count != 0 {
+        if dbg!(max_count) != 0 {
             let target_set = &completed_or_failed_key;
             Cmd::zadd(target_set, &job_id, timestamp)
                 .query_async(con)
@@ -693,6 +698,7 @@ pub async fn move_job_to_finished(
                         return convert_errors(result);
                     }
                 } else {
+                    dbg!("fetch_next is True");
                     let response = prepare_job_for_processing(
                         keys,
                         &prefix_key,

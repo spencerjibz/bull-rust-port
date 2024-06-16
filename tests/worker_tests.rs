@@ -5,6 +5,7 @@
 
 mod worker {
     use anyhow::Ok;
+    use async_atomic::Atomic;
     use async_event_emitter::AsyncEventEmitter;
     use async_lazy::Lazy;
     use bull::{
@@ -48,27 +49,28 @@ mod worker {
         let queue = QUEUE.force().await;
         let data = hashmap! {"foo"=> "bar"};
         let job_opts = JobOptions::default();
+
         type JobDataType = HashMap<&'static str, &'static str>;
         let worker_opts = WorkerOptions {
             autorun: false,
             ..Default::default()
         };
-
+        let count: Atomic<usize> = Atomic::new(1);
         let _job = queue
-            .add::<JobDataType, String>("test-job", data.clone(), job_opts.clone(), None)
+            .add::<_, String>("test-job", data.clone(), job_opts.clone(), None)
             .await?;
 
         let processor = |_data: JobSetPair<JobDataType, String>| async move {
             //  println!(" processing job {:#?}", data.0);
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // tokio::time::sleep(Duration::from_secs(2)).await;
 
             anyhow::Ok("done".to_owned())
         };
         let now = Instant::now();
         let mut worker = Worker::init(&QUEUE_NAME, queue, processor, worker_opts, None).await?;
 
-        for _ in 0..5 {
+        for _ in 0..2{
             let random_name = Uuid::new_v4().to_string();
             let rand_id: u16 = random();
             queue
@@ -84,13 +86,17 @@ mod worker {
             .on(
                 "completed",
                 move |(_completed_name, _id, returned_value): (String, String, String)| {
+                    count.fetch_add(1);
                     dbg!(_completed_name);
                     //assert_eq!(id, old_id);
                     assert_eq!(returned_value, "done");
                     //
                     //assert_eq!(completed_name, old_name);
-                    println!("{:?}", now.elapsed());
+                    println!("{:?} count : {:?}", now.elapsed(), count.load());
 
+                    if count.load() == 7 {
+                        std::process::exit(0);
+                    }
                     //assert_eq!(completed_job.return_value, Some("done".to_string()));
                     //assert_ne!(completed_job.finished_on, 0);
                     async move {}

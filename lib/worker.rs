@@ -99,6 +99,7 @@ where
         } else {
             AsyncEventEmitter::default()
         };
+        opts.concurrency = 1;
         let prefix = queue.prefix.to_owned();
         let queue_name = &queue.name;
         let connection = queue.manager.clone();
@@ -171,7 +172,7 @@ where
 
         let copy_pool = self.queue.manager.pool.clone();
         let mut stalled_check_timer =
-            Timer::new(self.options.stalled_interval as u64 / 2000, move || {
+            Timer::new(self.options.stalled_interval as u64 / 1000, move || {
                 let emitter = emitter.clone();
                 let options = options.clone();
                 let pool = copy_pool.clone();
@@ -202,12 +203,7 @@ where
             self.processor.clone(),
         );
 
-        let processing_loop = main_loop(packed_args, self.processing.clone());
-
-        let task = tokio::spawn(async {
-            processing_loop.await;
-        });
-        task.await?;
+        main_loop(packed_args, self.processing.clone()).await;
 
         self.running.store(false);
         self.timer.as_mut().unwrap().stop();
@@ -269,7 +265,7 @@ async fn run_stalled_jobs(
     let mut result = scripts
         .move_stalled_jobs_to_wait(options.max_stalled_count, options.stalled_interval)
         .await?;
-    if let [Some(failed), Some(stalled)] = [result.first(), result.get(1)] {
+    if let Some((failed, stalled)) = Some(result) {
         for job_id in failed {
             emitter
                 .lock()
@@ -613,6 +609,8 @@ pub async fn process_job<
                     let id = job.id.clone();
 
                     let finished_job = end.0.clone();
+                    println!("{finished_job:#?}");
+
                     if let Some(mut data) = finished_job {
                         let static_id = to_static_str(job.id.clone());
 
@@ -746,8 +744,6 @@ async fn main_loop<D, R>(
         while let Some(job) = tasks.pop() {
             // only process incomplete jobs;
             if !job.is_completed() {
-                // don't add completed jobs
-
                 let token = to_static_str(job.token.to_owned());
                 let args: PackedProcessArgs<D, R> = (
                     jobs.clone(),
