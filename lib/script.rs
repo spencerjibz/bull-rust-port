@@ -7,8 +7,8 @@ use crate::move_to_finished::{move_job_to_finished, MoveToFinishedArgs};
 use crate::worker::{map_from_string, map_from_vec};
 //use crate::move_to_finished::{self, move_job_to_finished};
 use crate::{
-    script_functions, job, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter, MoveToFinishOpts,
-    WorkerOptions,
+    job, script_functions, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter,
+    MoveToFinishOpts, WorkerOptions,
 };
 use crate::{job::Job, redis_connection::*};
 use anyhow::Error;

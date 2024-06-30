@@ -38,5 +38,3 @@ async fn main() -> anyhow::Result<()> {
     println!("{:?}", n.elapsed());
     Ok(())
 }
-
-

@@ -2,7 +2,9 @@ use core::time;
 use std::{collections::HashMap, fmt::format};
 
 use crate::*;
-use crate::{add_job3::get_next_delayed_timestamp, script_functions::add_job3::add_job_with_priority};
+use crate::{
+    add_job3::get_next_delayed_timestamp, script_functions::add_job3::add_job_with_priority,
+};
 use anyhow::{Ok, Result};
 use deadpool_redis::Connection;
 use redis::{Cmd, Value};

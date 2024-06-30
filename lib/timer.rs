@@ -33,7 +33,6 @@ impl Timer {
             task: None,
             _ok: true,
         }
-
     }
 
     pub fn run(&mut self) {

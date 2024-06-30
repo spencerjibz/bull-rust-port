@@ -11,7 +11,6 @@ use redis::{FromRedisValue, ToRedisArgs};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::format;
-use std::os::windows::process;
 use std::time;
 use std::{any, cmp};
 use uuid::Uuid;
@@ -68,7 +67,7 @@ pub struct Worker<D, R> {
     block_until: &'static Atomic<u64>,
     waiting: Arc<Mutex<Option<String>>>,
     drained: &'static Atomic<bool>,
-    pub   main_task:  Arc<Mutex<Option<JoinHandle<()>>>>,
+    pub main_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub tasks_completed: &'static Atomic<u64>,
 }
 impl<D, R> Worker<D, R>
@@ -148,7 +147,7 @@ where
             }
         });
 
-        let mut worker =  Arc::new(Self {
+        let mut worker = Arc::new(Self {
             id: Uuid::new_v4().to_string(),
             name: name.to_owned(),
             processing: Arc::new(Mutex::default()),
@@ -174,7 +173,7 @@ where
             main_task: Arc::default(),
         });
 
-        let  worker_clone = worker.clone();
+        let worker_clone = worker.clone();
         // running worker could fail
         if (worker.options.autorun) {
             worker_clone.run().await?;
@@ -182,7 +181,7 @@ where
         Ok(worker)
     }
 
-    pub async fn run(& self) -> anyhow::Result<()> {
+    pub async fn run(&self) -> anyhow::Result<()> {
         if self.running.as_ref().load() {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
@@ -206,14 +205,14 @@ where
         );
 
         dbg!("got here calculator");
-         self.start_timers().await;
-         dbg!("got here");
-    
+        self.start_timers().await;
+        dbg!("got here");
+
         let main_task = tokio::spawn(main_loop(packed_args, self.processing.clone()));
         let current_task = self.main_task.clone();
         let mut current_task = current_task.lock().await;
-    
-          *current_task=  Some(main_task);
+
+        *current_task = Some(main_task);
 
         self.running.store(true);
         //self.timer.as_mut().unwrap().stop();
@@ -256,18 +255,18 @@ where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
-    { 
+    {
         let emitter = self.emitter.clone();
         let mut emitter = emitter.lock().await;
         emitter.on(event, callback)
     }
-    pub async fn once<F, T, C>(& self, event: &str, callback: C) -> String
+    pub async fn once<F, T, C>(&self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-         let emitter = self.emitter.clone();
+        let emitter = self.emitter.clone();
         let mut emitter = emitter.lock().await;
         emitter.once(event, callback)
     }
