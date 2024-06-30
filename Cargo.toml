@@ -7,10 +7,6 @@ edition = "2021"
  [lib] 
 name ='bull'
 path="lib/mod.rs"
-
-[[bin]] 
- name="bull_rs"
- path="src/main.rs"
 [dependencies]
 anyhow = "1.0.70"
 async-trait = "0.1.68"

@@ -53,8 +53,8 @@ pub struct Worker<D, R> {
     pub connection: Arc<Pool>,
     pub options: Arc<WorkerOptions>,
     emitter: Arc<Mutex<AsyncEventEmitter>>,
-    pub timer: Option<Timer>,
-    pub stalled_check_timer: Option<Timer>,
+    extend_lock_timer: Arc<Mutex<Timer>>,
+    pub stalled_check_timer: Arc<Mutex<Timer>>,
     pub closing: &'static Atomic<bool>,
     pub closed: &'static Atomic<bool>,
     running: &'static Atomic<bool>,
@@ -68,6 +68,7 @@ pub struct Worker<D, R> {
     block_until: &'static Atomic<u64>,
     waiting: Arc<Mutex<Option<String>>>,
     drained: &'static Atomic<bool>,
+    pub   main_task:  Arc<Mutex<Option<JoinHandle<()>>>>,
     pub tasks_completed: &'static Atomic<u64>,
 }
 impl<D, R> Worker<D, R>
@@ -83,23 +84,16 @@ where
         + 'static
         + Deserialize<'static>,
 {
-    pub async fn init<F, C>(
+    pub async fn build<F, C>(
         name: &str,
         queue: &Queue,
         processor: C,
         mut opts: WorkerOptions,
-        _emitter: Option<&AsyncEventEmitter>,
-    ) -> Result<Worker<D, R>>
+    ) -> Result<Arc<Worker<D, R>>>
     where
         C: Fn(JobSetPair<D, R>) -> F + Send + Sync + 'static,
         F: Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
     {
-        let emitter = if let Some(value) = _emitter {
-            value.clone()
-        } else {
-            AsyncEventEmitter::default()
-        };
-        opts.concurrency = 1;
         let prefix = queue.prefix.to_owned();
         let queue_name = &queue.name;
         let connection = queue.manager.clone();
@@ -113,49 +107,38 @@ where
         static TASKS_COMPLETED: Atomic<u64> = Atomic::new(0);
         static BLOCK_UNTIL: Atomic<u64> = Atomic::new(0);
         static RUNNING: Atomic<bool> = Atomic::new(false);
+        let emitter: Arc<Mutex<AsyncEventEmitter>> = Arc::default();
+        let options = Arc::new(opts.clone());
+        let jobs = Arc::new(Mutex::default());
+        let emitter_clone = emitter.clone();
+        let queue_name = queue.name.clone();
+        let prefix = queue.prefix.to_string();
+        let options_clone = options.clone();
+        let installed_interval = options.stalled_interval;
 
-        let mut worker = Self {
-            id: Uuid::new_v4().to_string(),
-            name: name.to_owned(),
-            processing: Arc::new(Mutex::default()),
-            jobs: Arc::new(Mutex::default()),
-            connection: Arc::new(connection.pool.clone()),
-            options: Arc::new(opts.clone()),
-            emitter: Arc::new(Mutex::new(emitter.clone())),
-            prefix: opts.clone().prefix,
-            timer: None,
-            force_closing: FORCE_CLOSING.as_ref(),
-            processor: Arc::new(callback),
-            running: &RUNNING,
-            closed: &CLOSED,
-            closing: &CLOSING,
-            scripts: Arc::new(Mutex::new(scripts)),
-            stalled_check_timer: None,
-            queue: Arc::new(queue_copy),
-            block_until: &BLOCK_UNTIL,
-            waiting: Arc::new(Mutex::default()),
-            drained: &DRAINED,
-            tasks_completed: &TASKS_COMPLETED,
-        };
-        // running worker could fail
-        if (worker.options.autorun) {
-            worker.run().await?;
-        }
-        Ok(worker)
-    }
+        let copy_pool = queue.manager.pool.clone();
+        let mut stalled_check_timer = Timer::new(installed_interval as u64 / 1000, move || {
+            let emitter = emitter_clone.clone();
+            let options = options_clone.clone();
+            let pool = copy_pool.clone();
+            let queue_name = queue_name.clone();
+            let prefix = prefix.clone();
+            async move {
+                run_stalled_jobs(queue_name, prefix, pool, emitter, options).await;
+                println!("move stalled_");
+            }
+        });
+        let jobs_clone = jobs.clone();
+        let copy_pool = queue.manager.pool.clone();
+        let options_clone = options.clone();
+        let queue_name = queue.name.clone();
+        let lock_duration = options.lock_duration;
+        let queue_name = queue.name.clone();
+        let prefix = queue.prefix.to_string();
 
-    pub async fn run(&mut self) -> anyhow::Result<()> {
-        if self.running.as_ref().load() {
-            return Err(anyhow::anyhow!("Worker is already running"));
-        }
-        let queue_name = self.queue.name.clone();
-        let prefix = self.queue.prefix.to_owned();
-        let options = self.options.clone();
-        let jobs = self.jobs.clone();
-        let copy_pool = self.queue.manager.pool.clone();
-        let timer = Timer::new((self.options.lock_duration as u64 / 2000), move || {
-            let jobs = jobs.clone();
-            let options = options.clone();
+        let extend_lock_timer = Timer::new((lock_duration as u64 / 2000), move || {
+            let jobs = jobs_clone.clone();
+            let options = options_clone.clone();
 
             let pool = copy_pool.clone();
             let queue_name = queue_name.clone();
@@ -165,27 +148,46 @@ where
             }
         });
 
-        let emitter = self.emitter.clone();
-        let queue_name = self.queue.name.clone();
-        let prefix = self.queue.prefix.to_string();
-        let options = self.options.clone();
+        let mut worker =  Arc::new(Self {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_owned(),
+            processing: Arc::new(Mutex::default()),
+            jobs,
 
-        let copy_pool = self.queue.manager.pool.clone();
-        let mut stalled_check_timer =
-            Timer::new(self.options.stalled_interval as u64 / 1000, move || {
-                let emitter = emitter.clone();
-                let options = options.clone();
-                let pool = copy_pool.clone();
-                let queue_name = queue_name.clone();
-                let prefix = prefix.clone();
-                async move {
-                    run_stalled_jobs(queue_name, prefix, pool, emitter, options).await;
-                    println!("move stalled_");
-                }
-            });
-        self.running.as_ref().store(true);
-        self.timer = Some(timer);
-        self.stalled_check_timer = Some(stalled_check_timer);
+            connection: Arc::new(connection.pool.clone()),
+            options,
+            emitter,
+            prefix: opts.clone().prefix,
+            extend_lock_timer: Arc::new(Mutex::new(extend_lock_timer)),
+            force_closing: FORCE_CLOSING.as_ref(),
+            processor: Arc::new(callback),
+            running: &RUNNING,
+            closed: &CLOSED,
+            closing: &CLOSING,
+            scripts: Arc::new(Mutex::new(scripts)),
+            stalled_check_timer: Arc::new(Mutex::new(stalled_check_timer)),
+            queue: Arc::new(queue_copy),
+            block_until: &BLOCK_UNTIL,
+            waiting: Arc::new(Mutex::default()),
+            drained: &DRAINED,
+            tasks_completed: &TASKS_COMPLETED,
+            main_task: Arc::default(),
+        });
+
+        let  worker_clone = worker.clone();
+        // running worker could fail
+        if (worker.options.autorun) {
+            worker_clone.run().await?;
+        }
+        Ok(worker)
+    }
+
+    pub async fn run(& self) -> anyhow::Result<()> {
+        if self.running.as_ref().load() {
+            return Err(anyhow::anyhow!("Worker is already running"));
+        }
+
+        dbg!("got here");
 
         let packed_args = (
             self.id.clone(),
@@ -203,16 +205,25 @@ where
             self.processor.clone(),
         );
 
-        main_loop(packed_args, self.processing.clone()).await;
+        dbg!("got here calculator");
+         self.start_timers().await;
+         dbg!("got here");
+    
+        let main_task = tokio::spawn(main_loop(packed_args, self.processing.clone()));
+        let current_task = self.main_task.clone();
+        let mut current_task = current_task.lock().await;
+    
+          *current_task=  Some(main_task);
 
-        self.running.store(false);
-        self.timer.as_mut().unwrap().stop();
-        self.stalled_check_timer.as_mut().unwrap().stop();
+        self.running.store(true);
+        //self.timer.as_mut().unwrap().stop();
+        //self.stalled_check_timer.as_mut().unwrap().stop();
         Ok(())
     }
 
-    pub async fn cancel_processing(&mut self) {
-        let processing = self.processing.lock().await;
+    pub async fn cancel_processing(&self) {
+        let processing = self.processing.clone();
+        let processing = processing.lock().await;
         for job in processing.iter() {
             if !job.is_finished() {
                 job.abort();
@@ -220,31 +231,44 @@ where
         }
     }
 
-    pub fn close(&mut self, force: bool) {
+    pub async fn close(&self, force: bool) {
         if force {
             self.force_closing.as_ref().swap(true);
-            self.cancel_processing();
+            self.cancel_processing().await;
         }
         self.closing.as_ref().swap(true);
+        self.cancel_timers().await;
         self.connection.close();
-        dbg!(self.closing, self.force_closing);
+        self.closed.swap(true);
     }
-    pub async fn on<F, T, C>(&mut self, event: &str, callback: C) -> String
+
+    async fn cancel_timers(&self) {
+        self.extend_lock_timer.lock().await.stop();
+        self.stalled_check_timer.lock().await.stop();
+    }
+
+    async fn start_timers(&self) {
+        self.stalled_check_timer.lock().await.run();
+        self.extend_lock_timer.lock().await.run();
+    }
+    pub async fn on<F, T, C>(&self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
-    {
-        let mut emitter = self.emitter.lock().await;
+    { 
+        let emitter = self.emitter.clone();
+        let mut emitter = emitter.lock().await;
         emitter.on(event, callback)
     }
-    pub async fn once<F, T, C>(&mut self, event: &str, callback: C) -> String
+    pub async fn once<F, T, C>(& self, event: &str, callback: C) -> String
     where
         for<'de> T: Deserialize<'de> + std::fmt::Debug,
         C: Fn(T) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-        let mut emitter = self.emitter.lock().await;
+         let emitter = self.emitter.clone();
+        let mut emitter = emitter.lock().await;
         emitter.once(event, callback)
     }
 }
@@ -768,10 +792,6 @@ async fn main_loop<D, R>(
         let count = tasks_completed.load();
         if count > 0 {
             println!("jobs completed: {:#?}", count);
-        }
-
-        if processing.lock().await.is_empty() && closing.load() {
-            closed.store(true);
         }
     }
 }

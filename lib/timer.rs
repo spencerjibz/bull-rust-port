@@ -27,16 +27,13 @@ impl Timer {
         let interval = Duration::from_secs(delay_secs);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
-        let mut timer = Self {
+        Self {
             interval,
             callback: Arc::new(parsed_cb),
             task: None,
             _ok: true,
-        };
+        }
 
-        timer.run();
-
-        timer
     }
 
     pub fn run(&mut self) {
@@ -74,7 +71,8 @@ mod tests {
     #[tokio_shared_rt::test(shared = false)]
     async fn runs_and_stops() {
         let mut timer = Timer::new(1, || async { println!("hello") });
-        assert!(timer._ok);
+        timer.run();
+        dbg!(timer._ok);
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         timer.stop();

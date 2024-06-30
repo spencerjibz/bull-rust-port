@@ -39,4 +39,4 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// print the type of the variable
+

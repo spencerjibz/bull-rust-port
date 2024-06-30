@@ -167,7 +167,7 @@ impl Default for WorkerOptions {
         let cpu_count = num_cpus::get() / 2;
         Self {
             autorun: false,
-            concurrency: cpu_count,
+            concurrency: 1,
             max_stalled_count: 1,
             stalled_interval: 3000,
             lock_duration: 3000,
