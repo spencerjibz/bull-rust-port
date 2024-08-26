@@ -2,7 +2,6 @@ use anyhow::Ok;
 use async_atomic::Atomic;
 use async_lazy::Lazy;
 use bull::*;
-use core::sync;
 use lazy_static::lazy_static;
 use rand::random;
 use std::collections::HashMap;

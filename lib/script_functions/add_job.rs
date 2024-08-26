@@ -345,7 +345,7 @@ pub async fn add_job_to_queue(
     Cmd::hset_multiple(&job_id_key, &items)
         .query_async(con)
         .await?;
-    let args = [("event", "added"), ("jobId", &job_id), ("name", &job_name)];
+    let args = [("event", "added"), ("jobId", &job_id), ("name", job_name)];
     Cmd::xadd(&keys[7], "*", &args).query_async(con).await?;
     // check if the job is delayed
     let delayed_timestamp = if delay > 0 { timestamp + delay } else { 0 };
