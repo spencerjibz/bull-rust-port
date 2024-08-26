@@ -1,6 +1,15 @@
 #![allow(clippy::too_many_arguments)]
 use crate::add_job::add_job_to_queue;
-use crate::{functions, job, JobOptions, KeepJobs, WorkerOptions};
+use crate::add_job3::add_job_to_queue_3;
+use crate::move_stalled::move_stalled_jobs;
+use crate::move_to_active::move_job_to_active;
+use crate::move_to_finished::{move_job_to_finished, MoveToFinishedArgs};
+use crate::worker::{map_from_string, map_from_vec};
+//use crate::move_to_finished::{self, move_job_to_finished};
+use crate::{
+    job, script_functions, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter,
+    MoveToFinishOpts, WorkerOptions,
+};
 use crate::{job::Job, redis_connection::*};
 use anyhow::Error;
 use anyhow::Ok;
@@ -9,11 +18,10 @@ use futures::{future::ok, stream::TryFilterMap};
 use maplit::hashmap;
 pub use redis::Script;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
-use rmp::encode;
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, time};
-pub type ScriptCommands = HashMap<&'static str, Script>;
+type ScriptCommands = HashMap<&'static str, Script>;
 use crate::enums::ErrorCode::{self, *};
 use crate::redis_connection::*;
 use std::any::{self, Any};
@@ -24,6 +32,7 @@ pub struct Scripts {
     pub keys: HashMap<String, String>,
     pub commands: ScriptCommands,
     pub connection: Pool,
+    pub redis_version: String,
 }
 
 // debug implementation for Scripts
@@ -45,6 +54,7 @@ impl Scripts {
             "",
             "active",
             "wait",
+            "waiting-children",
             "paused",
             "completed",
             "failed",
@@ -55,6 +65,7 @@ impl Scripts {
             "id",
             "stalled-check",
             "meta",
+            "pc",
             "events",
         ];
         for name in names {
@@ -65,12 +76,11 @@ impl Scripts {
             keys.insert(name.to_owned(), format!("{prefix}:{queue_name}:{name}"));
         }
         let comands = hashmap! {
-
-            "extendLock" =>  Script::new(&get_script("extendLock-2.lua")),
+            "addJob" => Script::new(&get_script("addJob-9.lua")),
             "getCounts" =>  Script::new(&get_script("getCounts-1.lua")),
             "obliterate" =>  Script::new(&get_script("obliterate-2.lua")),
             "pause" => Script::new(&get_script("pause-4.lua")),
-            "moveToActive" =>  Script::new(&get_script("moveToActive-9.lua")),
+            "moveToActive" =>  Script::new(&get_script("moveToActive-10.lua")),
             "moveToFinished" =>  Script::new(&get_script("moveToFinished-12.lua")),
             "moveStalledJobsToWait"=>  Script::new(&get_script("moveStalledJobsToWait-8.lua")),
             "retryJobs" => Script::new(&get_script("retryJobs-6.lua")),
@@ -86,12 +96,16 @@ impl Scripts {
             keys,
             commands: comands,
             connection: conn,
+            redis_version: String::new(),
         }
     }
-    fn to_key(&self, name: &str) -> String {
+    pub fn to_key(&self, name: &str) -> String {
+        if name.is_empty() {
+            return format!("{}:{}", self.prefix, self.queue_name);
+        }
         format!("{}:{}:{}", self.prefix, self.queue_name, name)
     }
-    fn get_keys(&self, keys: &[&str]) -> Vec<String> {
+    pub fn get_keys(&self, keys: &[&str]) -> Vec<String> {
         keys.iter()
             .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
             .collect()
@@ -131,11 +145,11 @@ impl Scripts {
         ];
         Ok((keys, args))
     }
-    pub async fn add_job<'s, D: Serialize + Clone, R: FromRedisValue>(
+    pub async fn add_job<'s, D: Serialize + Clone + Deserialize<'s>, R: FromRedisValue>(
         &mut self,
         job: &Job<D, R>,
-    ) -> anyhow::Result<i64> {
-        let e = String::from("");
+    ) -> anyhow::Result<Option<i64>> {
+        let e = job.queue.prefix.to_owned();
         let prefix = self.keys.get("").unwrap_or(&e);
         let name = job.name;
         let parent = job.parent.clone();
@@ -154,28 +168,36 @@ impl Scripts {
             "priority",
             "completed",
             "events",
+            "pc",
         ]);
 
         let mut conn = self.connection.get().await?;
-        let result = add_job_to_queue(
-            &keys,
-            (
-                prefix.to_owned(),
-                job.id.to_owned(),
-                name.to_owned(),
-                job.timestamp,
-                parent_key,
-                None,
-                parent_dep_key,
-                parent,
-                None,
-            ),
-            json_data,
-            &job.opts,
-            &mut conn,
-        )
-        .await?;
+        // get the redis_version here;
+        let version = get_server_version(&mut conn).await?;
+        self.redis_version = version;
 
+        let mut packed_args: HashMap<&str, String> = HashMap::new();
+
+        packed_args.insert("prefix", prefix.to_owned());
+        packed_args.insert("job_id", job.id.clone());
+
+        packed_args.insert("name", job.name.to_owned());
+        packed_args.insert("timestamp", job.timestamp.to_string());
+        // write Optional parent key
+        if let Some(key) = job.parent_key.as_deref() {
+            packed_args.insert("parent_key", key.to_owned());
+        }
+        // write with  parent_deps;
+        if let Some(pk) = &parent_key {
+            let pk = format!("{}:dependencies", pk);
+            packed_args.insert("parent_dep_key", pk.to_owned());
+        }
+        if let Some(val) = parent {
+            let parent_data = serde_json::to_string(&val)?;
+            packed_args.insert("parent_data", parent_data);
+        }
+
+        let result = add_job_to_queue(&keys, packed_args, json_data, &job.opts, &mut conn).await?;
         Ok(result)
     }
     pub async fn pause<R: FromRedisValue>(&mut self, pause: bool) -> anyhow::Result<R> {
@@ -254,40 +276,32 @@ impl Scripts {
         &mut self,
         token: &str,
         opts: &WorkerOptions,
+        job_id: Option<String>,
     ) -> anyhow::Result<MoveToAciveResult> {
         use std::time::SystemTime;
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
-        let lock_duration = opts.lock_duration.to_string();
-        let limiter = serde_json::to_string(&opts.limiter)?;
+        let lock_duration = opts.lock_duration;
+        let limiter = opts.limiter.clone();
+        let e = &self.prefix.clone();
+        let prefix = self.to_key("");
 
         // let limiter = opts.
         let keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
-            "meta",
+            "meta", "pc",
         ]);
-        let mut packed_opts = Vec::new();
-        let p_opts = serde_json::to_string(&hashmap! {
-           "token" => token,
-           "lockDuration" => &lock_duration,
-           "limiter" => &limiter ,
-        })?;
-        let d = &self.to_key("");
-        let first_arg = self.keys.get("").unwrap_or(d);
-        encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-        let mut conn = &mut self.connection.get().await?;
-        let result: MoveToAciveResult = self
-            .commands
-            .get("moveToActive")
-            .unwrap()
-            .key(keys)
-            .arg(first_arg)
-            .arg(timestamp)
-            .arg(id)
-            .arg(packed_opts)
-            .invoke_async(conn)
-            .await?;
 
+        let move_opts = JobMoveOpts {
+            token: token.to_owned(),
+            lock_duration,
+            limiter: Some(limiter),
+        };
+
+        let mut con = &mut self.connection.get().await?;
+        let args = (prefix.to_owned(), timestamp as i64, job_id, move_opts);
+
+        let result = move_job_to_active(&keys, args, con).await?;
         Ok(result)
     }
 
@@ -295,23 +309,22 @@ impl Scripts {
     async fn move_to_finished<
         D: Serialize + Clone,
         R: FromRedisValue + Any + Send + Sync + Clone + 'static,
-        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<D, R>,
-        val: V,
+        val: String,
         prop_val: &str,
         should_remove: bool,
         target: &str,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<Option<MoveToAciveResult>> {
+    ) -> anyhow::Result<MoveToFinishedResult> {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
             "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
-            target,
+            "meta", "pc", target,
         ]);
         keys.push(self.to_key(job.id.as_str()));
         keys.push(self.to_key("meta"));
@@ -319,43 +332,72 @@ impl Scripts {
 
         let keep_jobs = self.get_keep_jobs(should_remove);
 
-        let mut packed_opts = Vec::new();
         let max_metrics_size = match &opts.metrics {
-            Some(v) => v.max_data_points.to_string(),
-            None => String::from(""),
+            Some(v) => v.max_data_points,
+            None => 0,
         };
-
-        let p_opts = serde_json::to_string(&hashmap! {
-            "token" => token.to_string(),
-            "keepJobs" => serde_json::to_string(&keep_jobs).unwrap(),
-            "limiter" => serde_json::to_string(&opts.limiter).unwrap(),
-            "lockDuration" => opts.lock_duration.to_string(),
-            "attempts" => job.attempts.to_string(),
-            "attemptsMade" => job.attempts_made.to_string(),
-            "maxMetricsSize" => max_metrics_size,
-            "fpof" => job.opts.fail_parent_on_failure.to_string(), //fail parent on failure
-        })?;
+        /*
+                let p_opts = serde_json::to_string(&hashmap! {
+                    "token" => token.to_string(),
+                    "keepJobs" => serde_json::to_string(&keep_jobs).unwrap(),
+                    "limiter" => serde_json::to_string(&opts.limiter).unwrap(),
+                    "lockDuration" => opts.lock_duration.to_string(),
+                    "attempts" => job.attempts.to_string(),
+                    "attemptsMade" => job.attempts_made.to_string(),
+                    "maxMetricsSize" => max_metrics_size.to_string(),
+                    "fpof" => job.opts.fail_parent_on_failure.to_string(), //fail parent on failure
+                })?;
+        */
+        let move_to_finished_opts = MoveToFinishOpts {
+            token: token.to_string(),
+            keep_jobs: KeepJobs::default(),
+            attempts_made: job.attempts_made,
+            attempts: job.attempts,
+            lock_duration: opts.lock_duration,
+            max_metrics_size,
+            limiter: opts.limiter.clone(),
+            fail_parent_on_failure: job.opts.fail_parent_on_failure,
+            remove_deps_on_failure: job.opts.remove_deps_on_failure,
+        };
         let fetch = if fetch_next { "fetch" } else { "" };
         let d = &self.to_key("");
-        let sec_last = self.keys.get("").unwrap_or(d);
+        let mut sec_last = self.to_key("");
+
         let mut connection = &mut self.connection.get().await?;
-        encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-        let result: Option<R> = self
-            .commands
-            .get("moveToFinished")
-            .unwrap()
-            .key(keys)
-            .arg(job.id.as_str())
-            .arg(timestamp)
-            .arg(prop_val)
-            .arg(val)
-            .arg(target)
-            .arg("")
-            .arg(fetch)
-            .arg(sec_last)
-            .arg(packed_opts)
-            .invoke_async(connection)
-            .await?;
+
+        let args = (
+            job.id.clone(),
+            timestamp as i64,
+            prop_val.to_owned(),
+            val.clone(),
+            target.to_string(),
+            Some("".to_owned()),
+            fetch_next,
+            sec_last.to_owned(),
+            move_to_finished_opts,
+        );
+        /*           encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
+             let result: Option<R> = self
+                 .commands
+                 .get("moveToFinished")
+                 .unwrap()
+                 .key(keys)
+                 .arg(job.id.as_str())
+                 .arg(timestamp)
+                 .arg(prop_val)
+                 .arg(&val)
+                 .arg(target)
+                 .arg("")
+                 .arg(fetch)
+                 .arg(sec_last)
+                 .arg(packed_opts)
+                 .invoke_async(connection)
+                 .await?;
+        */
+
+        move_job_to_finished(&keys, args, connection).await
+
+        /*
         use std::any::{Any, TypeId};
         if let Some(res) = result {
             if TypeId::of::<i8>() == res.type_id() {
@@ -382,7 +424,7 @@ impl Scripts {
                 return Ok(Some(returned_result));
             }
         }
-        Ok(None)
+        */
     }
 
     //create a function that generates timestamps;
@@ -397,29 +439,6 @@ impl Scripts {
         KeepJobs {
             age: None,
             count: Some(-1),
-        }
-    }
-
-    fn finished_errors(&self, num: i8, job_id: &str, command: &str, state: &str) -> anyhow::Error {
-        let code = ErrorCode::try_from(num).unwrap();
-        match code {
-            code_job_not_exist => {
-                anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
-            }
-            JobLockNotExist => {
-                anyhow::Error::msg(format!("missing lock for job {job_id}. {command}"))
-            }
-            JobNotInState => {
-                anyhow::Error::msg(format!("Job {job_id} is not in state {state}. {command}"))
-            }
-            job_pending_dependencies_not_found => anyhow::Error::msg(format!(
-                "Job {job_id} pending dependencies not found. {command}"
-            )),
-            parent_job_not_exists => {
-                anyhow::Error::msg(format!("Parent job {job_id} not found. {command}"))
-            }
-            JobLockMismatch => anyhow::Error::msg(format!("Job {job_id} lock mismatch. {command}")),
-            _ => anyhow::Error::msg(format!("Unknown code {num} error for  {job_id}. {command}")),
         }
     }
 
@@ -472,8 +491,8 @@ impl Scripts {
         &mut self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
-        let stalled = self.keys.get("").unwrap();
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let prefix = self.to_key("");
         let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
             "stalled",
@@ -482,21 +501,35 @@ impl Scripts {
             "failed",
             "stalled-check",
             "meta",
+            "paused",
             "events",
         ]);
         let conn = &mut self.connection.get().await?;
-
         let result = self
             .commands
-            .get("moveStalledJobToWait")
+            .get("moveStalledJobsToWait")
             .unwrap()
             .key(keys)
             .arg(max_stalled_count)
-            .arg(stalled)
+            .arg(prefix)
             .arg(timestamp)
             .arg(stalled_interval)
             .invoke_async(conn)
             .await?;
+        /*
+
+           let result = check_stalled_jobs(
+            &keys,
+            max_stalled_count as usize,
+            &prefix,
+            timestamp,
+            stalled_interval,
+            con,
+        )
+        .await?;
+
+            */
+        // println!(" stalled {result:?}");
         Ok(result)
     }
     pub async fn update_progress<P: Serialize>(
@@ -526,7 +559,7 @@ impl Scripts {
                 if val >= 0 {
                     return Ok(Some(val));
                 }
-                Err(self.finished_errors(val, job_id, "updateProgress", "active"))
+                Err(finished_errors(val, job_id, "updateProgress", "active"))
             }
             None => Ok(None),
         }
@@ -535,16 +568,15 @@ impl Scripts {
         's,
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
-        V: Any + ToRedisArgs,
     >(
         &mut self,
         job: &mut Job<D, R>,
-        val: V,
+        val: String,
         remove_on_complete: bool,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<Option<MoveToAciveResult>> {
+    ) -> anyhow::Result<MoveToFinishedResult> {
         self.move_to_finished(
             job,
             val,
@@ -568,7 +600,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<Option<MoveToAciveResult>> {
+    ) -> anyhow::Result<MoveToFinishedResult> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -643,8 +675,9 @@ impl Scripts {
             "waiting-children",
             "prioritized",
         ]);
+        let mut conn = self.connection.get().await?;
+        let version = get_server_version(&mut conn).await?;
 
-        let version = self.get_server_version().await?;
         // use semver to compare the version of the redis server
         // if the version is greater than 6.2.0 then use the getStateV2 script
         let script = if *version > *"6.0.6" {
@@ -652,7 +685,7 @@ impl Scripts {
         } else {
             "getState"
         };
-        println!("version: {}", script);
+
         let args = vec![job_id.to_string(), self.to_key(job_id)];
         let mut conn = self.connection.get().await.unwrap();
         let result: String = self
@@ -664,22 +697,6 @@ impl Scripts {
             .invoke_async(&mut conn)
             .await?;
         Ok(result)
-    }
-    // write a function that return the version of the redis server
-    pub async fn get_server_version(&self) -> anyhow::Result<String> {
-        let mut conn = self.connection.get().await?;
-        let result: String = redis::cmd("INFO")
-            .arg("server")
-            .query_async(&mut conn)
-            .await?;
-
-        for line in result.lines() {
-            if line.starts_with("redis_version") {
-                let version = line.split(':').nth(1).unwrap();
-                return Ok(version.to_string());
-            }
-        }
-        Ok("".to_string())
     }
 
     pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
@@ -697,7 +714,7 @@ impl Scripts {
 
         for (i, v) in keys.iter_mut().enumerate() {
             if i == 0 {
-                v.push(':')
+                v.push(':');
             }
         }
         let mut conn = self.connection.get().await?;
@@ -719,13 +736,16 @@ pub fn print_type_of<T>(_: &T) -> String {
 
 type Map = HashMap<String, String>;
 pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
-pub type MoveToAciveResult = (Option<Map>, Option<String>, u64, Option<u64>);
 
+/// MoveToAciveResult(next_job_data,job_id, expireTime, delay)
+pub type MoveToAciveResult = (Option<Vec<String>>, Option<String>, i64, Option<i64>);
+
+/// MoveToFinishedResult (finished_job_data,job_id, expireTime, delay
+pub type MoveToFinishedResult = (Option<crate::JobJsonRaw>, Option<String>, i64, Option<i64>);
 // test
 
 pub fn get_script(script_name: &'static str) -> String {
     use std::fs;
-
     fs::read_to_string(format!("commands/{script_name}"))
         .expect("Something went wrong reading the file")
 }
@@ -733,11 +753,7 @@ pub fn get_script(script_name: &'static str) -> String {
 #[cfg(test)]
 #[test]
 fn test_get_script() {
-    // read out the file addJob-8.lua  and return a string with contents
-    // of the
-
     let script = get_script("addJob-8.lua");
-    // println!("{:?}", script);
     assert!(!script.is_empty());
 }
 
@@ -747,6 +763,58 @@ pub fn generate_timestamp() -> anyhow::Result<u64> {
         .duration_since(SystemTime::UNIX_EPOCH)?
         .as_secs()
         * 1000;
-
     Ok(result)
+}
+
+// write a function that return the version of the redis server
+pub async fn get_server_version(conn: &mut Connection) -> anyhow::Result<String> {
+    let result: String = redis::cmd("INFO").arg("server").query_async(conn).await?;
+    for line in result.lines() {
+        if line.starts_with("redis_version") {
+            let version = line.split(':').nth(1).unwrap();
+            return Ok(version.to_string());
+        }
+    }
+    Ok("".to_string())
+}
+
+pub fn finished_errors(num: i8, job_id: &str, command: &str, state: &str) -> anyhow::Error {
+    let code = ErrorCode::try_from(num).unwrap();
+    match code {
+        code_job_not_exist => {
+            anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
+        }
+        JobLockNotExist => anyhow::Error::msg(format!("missing lock for job {job_id}. {command}")),
+        JobNotInState => {
+            anyhow::Error::msg(format!("Job {job_id} is not in state {state}. {command}"))
+        }
+        job_pending_dependencies_not_found => anyhow::Error::msg(format!(
+            "Job {job_id} pending dependencies not found. {command}"
+        )),
+        parent_job_not_exists => {
+            anyhow::Error::msg(format!("Parent job {job_id} not found. {command}"))
+        }
+        JobLockMismatch => anyhow::Error::msg(format!("Job {job_id} lock mismatch. {command}")),
+        _ => anyhow::Error::msg(format!("Unknown code {num} error for  {job_id}. {command}")),
+    }
+}
+
+// Convert MoveToAcive to MoveToFinished;
+
+pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinishedResult> {
+    match active_to_active {
+        (list, job_id, limit_until, delay) => {
+            let mut job: Option<JobJsonRaw> = None;
+            // convert the length to a a raw job;
+            if let Some(vec_list) = list {
+                let map = map_from_vec(&vec_list);
+
+                let json = JobJsonRaw::from_map(map)?;
+                job = Some(json);
+            }
+
+            Ok((job, job_id, limit_until, delay))
+        }
+        _ => Err(anyhow::Error::msg("failed to convert")),
+    }
 }

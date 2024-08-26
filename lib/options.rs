@@ -16,6 +16,7 @@ pub struct KeepJobs {
     pub count: Option<i64>, // Maximum Number of jobs to keep
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct JobOptions {
     pub priority: i64,
     pub job_id: Option<String>,
@@ -34,15 +35,20 @@ pub struct JobOptions {
     pub lifo: bool,
     /// if true, adds the job to the right of the queue instead of the left
     pub parent: Option<Parent>,
+    pub remove_deps_on_failure: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Parent {
     pub id: String,
     pub queue: String,
+    pub remove_deps_on_failure: bool,
+    pub fail_parent_on_failure: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepeatOpts {
     pub pattern: String,
     pub limit: i64,
@@ -55,6 +61,7 @@ pub struct RepeatOpts {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoveOnCompletionOrFailure {
     pub bool: bool, // if true, remove the job when it completes
     pub int: i64,   //  number is passed, its specifies the maximum amount of jobs to keeps
@@ -69,7 +76,7 @@ impl Default for JobOptions {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs_f32();
-        //dbg!("{} {}", id, timestamp);
+
         Self {
             priority: 0,
             timestamp: Some((timestamp * 1000.0).round() as i64),
@@ -83,8 +90,30 @@ impl Default for JobOptions {
             backoff: (0, None),
             lifo: false,
             parent: None,
+            remove_deps_on_failure: false,
         }
     }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveToFinishOpts {
+    pub keep_jobs: KeepJobs,
+    pub token: String,
+    pub attempts: i64,
+    pub attempts_made: i64,
+    pub max_metrics_size: i64,
+    pub fail_parent_on_failure: bool,
+    pub remove_deps_on_failure: bool,
+    pub limiter: Limiter,
+    pub lock_duration: i64,
+}
+#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMoveOpts {
+    pub token: String,
+    pub lock_duration: i64,
+    pub(crate) limiter: Option<Limiter>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -94,9 +123,10 @@ pub struct RetryJobOptions {
     pub timestamp: i64,
 }
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
-    pub concurrency: usize, // number of parallel jobs per worker, default: 1
+    pub concurrency: usize, // number of parallel jobs per worker, default: No of cpus/2
     pub max_stalled_count: i64, // n of jobs to be recovered from stalled state, default:1
     pub stalled_interval: i64, // milliseconds between stallness checks, default 30000
     pub lock_duration: i64, // Duration of lock for job in milliseconds, default: 30000
@@ -109,13 +139,14 @@ pub struct WorkerOptions {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+
 pub struct Limiter {
-    max: i64,
-    duration: i64,
+    pub max: i64,
+    pub duration: i64,
 }
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct MetricOptions {
-    pub max_data_points: String,
+    pub max_data_points: i64,
 }
 
 #[derive(Default, Clone)]
@@ -133,12 +164,13 @@ impl fmt::Debug for QueueSettings {
 
 impl Default for WorkerOptions {
     fn default() -> Self {
+        let cpu_count = num_cpus::get() / 2;
         Self {
-            autorun: true,
+            autorun: false,
             concurrency: 1,
             max_stalled_count: 1,
-            stalled_interval: 30000,
-            lock_duration: 30000,
+            stalled_interval: 3000,
+            lock_duration: 3000,
             prefix: "".to_string(),
             connection: "redis://localhost:6379".to_ascii_lowercase(),
             limiter: Limiter::default(),
@@ -207,7 +239,8 @@ impl JobJsonRaw {
                 "timestamp" => job.timestamp = v,
                 "failed_reason" | "failedReason" => job.failed_reason = v,
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_str(v)?,
-                "returnvalue" => job.return_value = v,
+                "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
+                | "returnedValue" => job.return_value = v,
                 "parent" => job.parent = Some(v),
                 "rjk" => job.rjk = Some(v),
                 "finished_on" | "finishedOn" => job.finished_on = Some(v),
@@ -237,7 +270,8 @@ impl JobJsonRaw {
                     job.failed_reason = to_static_str(v.as_str().unwrap_or("").to_string())
                 }
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_value(v)?,
-                "returnvalue" | "return_value" | "returnValue" => {
+                "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
+                | "returnedValue" => {
                     job.return_value = to_static_str(v.as_str().unwrap_or("").to_string())
                 }
                 "parent" => {

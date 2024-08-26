@@ -99,7 +99,6 @@ impl std::fmt::Debug for BackOff {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     #[test]
     fn test_expotential_backoff() {
@@ -115,7 +114,6 @@ mod tests {
             assert_eq!(strategy(1), 200);
         }
     }
-
     #[test]
     fn test_fixed_back() {
         let mut backoff = BackOff::new();

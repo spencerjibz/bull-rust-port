@@ -5,7 +5,7 @@ use crate::script;
 use anyhow::Ok;
 use deadpool_redis::{Connection, Pool, Runtime};
 use futures::future::ok;
-use redis::{AsyncCommands, FromRedisValue, Script};
+use redis::{AsyncCommands, FromRedisValue, Script, ToRedisArgs};
 use std::collections::HashMap;
 use std::future::Future;
 pub type ListenerCallback<T> = dyn FnMut(T) -> (dyn Future<Output = ()> + Send + Sync + 'static);
@@ -65,9 +65,10 @@ impl Queue {
         name: &'a str,
         data: D,
         opts: JobOptions,
+        job_id: Option<String>,
     ) -> anyhow::Result<Job<D, R>> {
         let copy = self.clone();
-        let mut job = Job::<D, R>::new(name, self, data, opts).await?;
+        let mut job = Job::<D, R>::new(name, self, data, opts, job_id).await?;
         let mut scripts = self.scripts.lock().await;
         let job_id = scripts.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;

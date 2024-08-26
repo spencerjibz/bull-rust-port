@@ -46,7 +46,7 @@ impl RedisConnection {
                 let username = *map.get(&"username").unwrap_or(&"default");
 
                 let url = format!("redis://{username}:{password}@{host}:{port}");
-                //println!("{}",url);
+
                 let mut cfg = deadpool_redis::Config::from_url(url);
                 let client = cfg.create_pool(Some(Runtime::Tokio1))?;
                 let conn = client.get().await?;
