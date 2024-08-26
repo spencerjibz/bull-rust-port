@@ -118,7 +118,6 @@ mod queue {
         let state = queue.get_job_state(&job.id).await?;
 
         assert_eq!(state, "waiting".to_string());
-        // cleanup
         queue.remove_job(job.id, false).await?;
 
         Ok(())
