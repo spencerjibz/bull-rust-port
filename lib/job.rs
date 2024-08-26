@@ -39,7 +39,7 @@ pub struct Job<D, R> {
     pub token: &'static str,
     pub remove_deps_on_failure: bool,
 }
-// implement Serialize for Job
+
 impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -71,9 +71,6 @@ impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
     }
 }
 
-// implement Deserialize for Job
-
-//implement PartialEq for Job
 impl<
         D: Deserialize<'static> + Serialize + Clone + std::fmt::Debug + Send + Sync,
         R: Deserialize<'static> + Serialize + FromRedisValue + Any + Send + Sync + Clone,
@@ -83,7 +80,6 @@ impl<
         self.id == other.id
     }
 }
-
 impl<
         'a,
         D: Deserialize<'a> + Serialize + Clone + Send + Sync,
@@ -107,8 +103,6 @@ impl<
             .await
             .update_progress(&self.id, progress)
             .await
-
-        // return a script to update the progress;
     }
 
     pub async fn new(
@@ -396,7 +390,7 @@ impl<
     }
 }
 
-// implement fmt::Debug for Job;
+// Custom implementation of Debug for Job, don't care about the logging the queue and the scripts
 impl<D: std::fmt::Debug, R: std::fmt::Debug> std::fmt::Debug for Job<D, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
