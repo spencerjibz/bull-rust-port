@@ -1,30 +1,42 @@
 #![allow(clippy::too_many_arguments)]
-use crate::add_job::add_job_to_queue;
-use crate::add_job3::add_job_to_queue_3;
-use crate::move_stalled::move_stalled_jobs;
-use crate::move_to_active::move_job_to_active;
-use crate::move_to_finished::{move_job_to_finished, MoveToFinishedArgs};
-use crate::worker::{map_from_string, map_from_vec};
-//use crate::move_to_finished::{self, move_job_to_finished};
-use crate::{
-    job, script_functions, JobJsonRaw, JobMoveOpts, JobOptions, KeepJobs, Limiter,
-    MoveToFinishOpts, WorkerOptions,
-};
-use crate::{job::Job, redis_connection::*};
-use anyhow::Error;
+use std::any::Any;
+use std::collections::HashMap;
+
 use anyhow::Ok;
 use anyhow::Result;
-use futures::{future::ok, stream::TryFilterMap};
+use derive_redis_json::RedisJsonValue;
 use maplit::hashmap;
 pub use redis::Script;
-use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
+use redis::{FromRedisValue, Value};
+use redis_derive::FromRedisValue;
+use rmp::encode;
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, time};
-type ScriptCommands = HashMap<&'static str, Script>;
+//use crate::move_to_finished::{self, move_job_to_finished};
 use crate::enums::ErrorCode::{self, *};
+use crate::move_to_active::move_job_to_active;
+use crate::move_to_finished::move_job_to_finished;
 use crate::redis_connection::*;
-use std::any::{self, Any};
+use crate::worker::map_from_vec;
+use crate::Parent;
+use crate::{job::Job, redis_connection::*};
+use crate::{JobJsonRaw, JobMoveOpts, KeepJobs, MoveToFinishOpts, WorkerOptions};
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct Arguments {
+    key_prefix: String,
+    custom_id: Option<String>,
+    name: String,
+    timestamp: u64,
+    parent_key: Option<String>,
+    wait_children_key: Option<String>,
+    parent_dependencies_key: Option<String>,
+    parent: Option<Parent>,
+    repeat_job_key: Option<String>,
+}
+
+type ScriptCommands = HashMap<&'static str, Script>;
 #[derive(Clone)]
 pub struct Scripts {
     pub prefix: String,
@@ -61,7 +73,7 @@ impl Scripts {
             "delayed",
             "stalled",
             "limiter",
-            "priority",
+            "prioritized",
             "id",
             "stalled-check",
             "meta",
@@ -106,9 +118,7 @@ impl Scripts {
         format!("{}:{}:{}", self.prefix, self.queue_name, name)
     }
     pub fn get_keys(&self, keys: &[&str]) -> Vec<String> {
-        keys.iter()
-            .map(|&k| String::from(self.keys.get(k).unwrap_or(&String::new())))
-            .collect()
+        keys.iter().map(|&k| self.to_key(k)).collect()
     }
     pub fn save_stacktrace_args(
         &self,
@@ -165,7 +175,7 @@ impl Scripts {
             "meta",
             "id",
             "delayed",
-            "priority",
+            "prioritized",
             "completed",
             "events",
             "pc",
@@ -176,28 +186,35 @@ impl Scripts {
         let version = get_server_version(&mut conn).await?;
         self.redis_version = version;
 
-        let mut packed_args: HashMap<&str, String> = HashMap::new();
+        let mut args = Arguments::default();
+        args.custom_id = Some(job.id.clone());
 
-        packed_args.insert("prefix", prefix.to_owned());
-        packed_args.insert("job_id", job.id.clone());
+        args.key_prefix = prefix.to_string();
 
-        packed_args.insert("name", job.name.to_owned());
-        packed_args.insert("timestamp", job.timestamp.to_string());
+        args.name = job.name.to_owned();
+
+        args.timestamp = job.timestamp as u64;
         // write Optional parent key
-        if let Some(key) = job.parent_key.as_deref() {
-            packed_args.insert("parent_key", key.to_owned());
-        }
-        // write with  parent_deps;
-        if let Some(pk) = &parent_key {
-            let pk = format!("{}:dependencies", pk);
-            packed_args.insert("parent_dep_key", pk.to_owned());
-        }
-        if let Some(val) = parent {
-            let parent_data = serde_json::to_string(&val)?;
-            packed_args.insert("parent_data", parent_data);
-        }
+        args.parent_key = job.parent_key.clone();
 
-        let result = add_job_to_queue(&keys, packed_args, json_data, &job.opts, &mut conn).await?;
+        // with_children_key
+        args.wait_children_key = job.with_children_key.clone();
+
+        args.parent_key = job.parent_key.clone();
+
+        args.parent = job.parent.clone();
+        args.repeat_job_key = job.repeat_job_key.map(|key| key.to_owned());
+        let packed_args = rmp_serde::encode::to_vec(&args)?;
+        let packed_opts = rmp_serde::encode::to_vec_named(&job.opts)?;
+        let mut script_runner = self.commands.get("addJob").unwrap().prepare_invoke();
+
+        let result = script_runner
+            .key(keys)
+            .arg(packed_args)
+            .arg(json_data)
+            .arg(packed_opts)
+            .invoke_async(&mut conn)
+            .await?;
         Ok(result)
     }
     pub async fn pause<R: FromRedisValue>(&mut self, pause: bool) -> anyhow::Result<R> {
@@ -278,7 +295,6 @@ impl Scripts {
         opts: &WorkerOptions,
         job_id: Option<String>,
     ) -> anyhow::Result<MoveToAciveResult> {
-        use std::time::SystemTime;
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
         let lock_duration = opts.lock_duration;
@@ -288,8 +304,16 @@ impl Scripts {
 
         // let limiter = opts.
         let keys = self.get_keys(&[
-            "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
-            "meta", "pc",
+            "wait",
+            "active",
+            "prioritized",
+            "events",
+            "stalled",
+            "limiter",
+            "delayed",
+            "paused",
+            "meta",
+            "pc",
         ]);
 
         let move_opts = JobMoveOpts {
@@ -297,12 +321,26 @@ impl Scripts {
             lock_duration,
             limiter: Some(limiter),
         };
+        dbg!(&move_opts);
 
-        let mut con = &mut self.connection.get().await?;
-        let args = (prefix.to_owned(), timestamp as i64, job_id, move_opts);
+        let mut connection = &mut self.connection.get().await?;
+        //  let args = (prefix.to_owned(), timestamp as i64, job_id, move_opts);
+        let packed_opts = rmp_serde::encode::to_vec_named(&move_opts)?;
 
-        let result = move_job_to_active(&keys, args, con).await?;
-        Ok(result)
+        let result: MoveToAciveResults = self
+            .commands
+            .get("moveToActive")
+            .unwrap()
+            .key(keys)
+            .arg(prefix)
+            .arg(timestamp)
+            .arg(job_id)
+            .arg(packed_opts)
+            // add work otpions here
+            .invoke_async(connection)
+            .await?;
+
+        Ok(result.into())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -323,8 +361,17 @@ impl Scripts {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
-            "wait", "active", "priority", "events", "stalled", "limiter", "delayed", "paused",
-            "meta", "pc", target,
+            "wait",
+            "active",
+            "prioritized",
+            "events",
+            "stalled",
+            "limiter",
+            "delayed",
+            "paused",
+            "meta",
+            "pc",
+            target,
         ]);
         keys.push(self.to_key(job.id.as_str()));
         keys.push(self.to_key("meta"));
@@ -737,9 +784,80 @@ pub fn print_type_of<T>(_: &T) -> String {
 type Map = HashMap<String, String>;
 pub type NextJobData = Option<(Option<Map>, Option<Map>)>;
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MoveToAciveResults {
+    RateLimitedOrProcessMore((i32, i32, i32)), // (0,0,time) -> process_more,
+    NextDelayedJob((i32, i32, i32, u64)),
+    NextJobData((Vec<String>, String, u64)), // (data, jobId, expireTime)
+}
+
+impl FromRedisValue for MoveToAciveResults {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        use std::result::Result::Ok;
+        match *v {
+            // If the Redis value is a bulk string or a list, try to match the expected structure
+            Value::Bulk(ref items) if items.len() == 3 => {
+                if let (Value::Int(a), Value::Int(b), Value::Int(c)) =
+                    (&items[0], &items[1], &items[2])
+                {
+                    return Ok(MoveToAciveResults::RateLimitedOrProcessMore((
+                        *a as i32, *b as i32, *c as i32,
+                    )));
+                } else if let (Value::Int(a), Value::Int(b), Value::Int(c), Value::Int(d)) = (
+                    &items[0],
+                    &items[1],
+                    &items[2],
+                    &items.get(3).unwrap_or(&Value::Nil),
+                ) {
+                    return Ok(MoveToAciveResults::NextDelayedJob((
+                        *a as i32, *b as i32, *c as i32, *d as u64,
+                    )));
+                } else if let (
+                    Value::Bulk(data_strings),
+                    Value::Data(job_id),
+                    Value::Int(expire_time),
+                ) = (&items[0], &items[1], &items[2])
+                {
+                    let string_data: Vec<String> = data_strings
+                        .iter()
+                        .map(|v| redis::from_redis_value(v).expect("failed to parse message"))
+                        .collect();
+                    return Ok(MoveToAciveResults::NextJobData((
+                        string_data,
+                        String::from_utf8(job_id.clone()).unwrap(),
+                        *expire_time as u64,
+                    )));
+                }
+            }
+            _ => {}
+        }
+
+        Err(redis::RedisError::from((
+            redis::ErrorKind::TypeError,
+            "Invalid type for MoveToActiveResults",
+        )))
+    }
+}
+
 /// MoveToAciveResult(next_job_data,job_id, expireTime, delay)
 pub type MoveToAciveResult = (Option<Vec<String>>, Option<String>, i64, Option<i64>);
 
+impl From<MoveToAciveResults> for MoveToAciveResult {
+    fn from(value: MoveToAciveResults) -> Self {
+        match value {
+            MoveToAciveResults::RateLimitedOrProcessMore((_, _, pttl)) => {
+                (None, None, 0, Some(pttl as i64))
+            }
+            MoveToAciveResults::NextDelayedJob((_, _, _, next_ts)) => {
+                (None, None, 0, Some(next_ts as i64))
+            }
+            MoveToAciveResults::NextJobData((data, job_id, expire)) => {
+                (Some(data), Some(job_id), expire as i64, None)
+            }
+        }
+    }
+}
 /// MoveToFinishedResult (finished_job_data,job_id, expireTime, delay
 pub type MoveToFinishedResult = (Option<crate::JobJsonRaw>, Option<String>, i64, Option<i64>);
 // test

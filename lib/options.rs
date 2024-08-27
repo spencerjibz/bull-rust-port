@@ -1,15 +1,14 @@
-// Specify which jobs to keep after finishing. If both age and count are
-//  specified, then the jobs kept will be the ones that satisfies both
-// properties.
-use crate::redis_connection::RedisOpts;
+use std::{borrow::Borrow, collections::HashMap, fmt::Display};
+//implement fmt::Debug for QueueSettings
+use std::sync::Arc;
+use std::{fmt, i64};
+
 use crate::to_static_str;
 use crate::StoredFn;
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 pub use derive_redis_json::RedisJsonValue;
-use rand::prelude::*;
-use redis::{FromRedisValue, RedisError, RedisResult, ToRedisArgs, Value};
 pub use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::{borrow::Borrow, collections::HashMap, default, fmt::Display};
+
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
 pub struct KeepJobs {
     pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
@@ -26,16 +25,28 @@ pub struct JobOptions {
     /// number of milliseconds to wait until this job can be processed
     pub attempts: i64,
     /// total number of attempts to try the job until it completes.
-    pub remove_on_complete: RemoveOnCompletionOrFailure,
-    pub remove_on_fail: RemoveOnCompletionOrFailure,
+    pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
+    #[serde(rename = "fpof")]
     pub fail_parent_on_failure: bool,
     /// if true, moves parent to failed
     pub stacktrace_limit: Option<usize>,
-    pub backoff: (i64, Option<BackOffOptions>), //
+    pub backoff: Option<BackOffJobOptions>, //
     pub lifo: bool,
     /// if true, adds the job to the right of the queue instead of the left
     pub parent: Option<Parent>,
+    #[serde(rename = "rdof")]
     pub remove_deps_on_failure: bool,
+
+    // reapeat options
+    pub repeat: Option<RepeatOpts>,
+}
+
+#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[serde(untagged)]
+pub enum BackOffJobOptions {
+    Number(i64),
+    Opts(BackOffOptions),
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
@@ -58,14 +69,23 @@ pub struct RepeatOpts {
     pub prev_millis: i64,
     pub offset: i64,
     pub job_id: String,
+    pub current_date: NaiveDateTime,
+    pub start_date: NaiveDateTime,
+    pub end_date: NaiveDateTime,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoveOnCompletionOrFailure {
-    pub bool: bool, // if true, remove the job when it completes
-    pub int: i64,   //  number is passed, its specifies the maximum amount of jobs to keeps
-    pub keep: Option<KeepJobs>,
+#[derive(Debug, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[serde(untagged)]
+pub enum RemoveOnCompletionOrFailure {
+    Bool(bool), // if true, remove the job when it completes
+    Int(i64),   //  number is passed, its specifies the maximum amount of jobs to keeps
+    Opts(KeepJobs),
+}
+
+impl Default for RemoveOnCompletionOrFailure {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
 }
 
 impl Default for JobOptions {
@@ -76,6 +96,7 @@ impl Default for JobOptions {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs_f32();
+        let remove_opts = RemoveOnCompletionOrFailure::default();
 
         Self {
             priority: 0,
@@ -83,14 +104,15 @@ impl Default for JobOptions {
             job_id: Some(id.to_string()),
             delay: 0,
             attempts: 0,
-            remove_on_complete: RemoveOnCompletionOrFailure::default(),
-            remove_on_fail: RemoveOnCompletionOrFailure::default(),
+            remove_on_complete: Some(remove_opts.clone()),
+            remove_on_fail: Some(remove_opts),
             fail_parent_on_failure: false,
             stacktrace_limit: None,
-            backoff: (0, None),
+            backoff: None,
             lifo: false,
             parent: None,
             remove_deps_on_failure: false,
+            repeat: None,
         }
     }
 }
@@ -138,11 +160,19 @@ pub struct WorkerOptions {
     pub remove_on_fail: RemoveOnCompletionOrFailure,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
-
+#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct Limiter {
     pub max: i64,
     pub duration: i64,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        Self {
+            max: 1000,
+            duration: 10000,
+        }
+    }
 }
 #[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
 pub struct MetricOptions {
@@ -154,8 +184,6 @@ pub struct QueueSettings {
     pub backoff_strategy: Option<Arc<StoredFn>>,
 }
 
-//implement fmt::Debug for QueueSettings
-use std::fmt;
 impl fmt::Debug for QueueSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QueueSettings").finish()

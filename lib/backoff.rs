@@ -31,19 +31,23 @@ impl BackOff {
     ) {
         self.builtin_strategies.insert(name, Arc::new(strategy));
     }
-    pub fn normalize(backoff: (i64, Option<BackOffOptions>)) -> Option<BackOffOptions> {
-        if backoff.0 == 0 {
+    pub fn normalize(backoff: Option<BackOffJobOptions>) -> Option<BackOffOptions> {
+        if backoff.is_none() {
             return None;
         }
+        let backoff = backoff.unwrap();
         match backoff {
-            (num, None) => {
+            BackOffJobOptions::Number(num) => {
+                if num == 0 {
+                    return None;
+                }
                 let opts = BackOffOptions {
                     delay: Some(num),
                     type_: Some("exponential".to_string()),
                 };
                 Some(opts)
             }
-            (num, Some(opts)) => Some(opts),
+            BackOffJobOptions::Opts(opts) => Some(opts),
             _ => None,
         }
     }

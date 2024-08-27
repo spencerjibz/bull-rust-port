@@ -104,7 +104,7 @@ local function getRateLimitTTL(opts, limiterKey)
       end
     end
   end
-  return 0
+  return 0 
 end
 --[[
   Function to check for the meta.paused key to decide if we are paused or not
