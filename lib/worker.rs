@@ -1,27 +1,24 @@
-use crate::timer::Timer;
-use crate::*;
-use anyhow::Ok;
-use async_event_emitter::AsyncEventEmitter;
-
-use futures::future::{BoxFuture, Future, FutureExt};
-
-use futures::{lock, StreamExt};
-use redis::Cmd;
-use redis::{FromRedisValue, ToRedisArgs};
+use std::cmp;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::format;
-use std::time;
-use std::{any, cmp};
-use uuid::Uuid;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use anyhow::Ok;
 use async_atomic::Atomic;
+use async_event_emitter::AsyncEventEmitter;
+use futures::future::{BoxFuture, Future, FutureExt};
 use futures::lock::Mutex;
 use futures::stream::FuturesUnordered;
-use std::cell::RefCell;
-use std::sync::Arc;
-use tokio::task::{self, JoinHandle};
+use futures::StreamExt;
+use redis::{FromRedisValue, ToRedisArgs};
+use redis::Cmd;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+use crate::*;
+use crate::timer::Timer;
+
 #[derive(Clone)]
 pub struct JobSetPair<D, R>(pub Job<D, R>, pub &'static str);
 
@@ -42,7 +39,7 @@ impl<D, R> std::hash::Hash for JobSetPair<D, R> {
 
 /// types
 type WorkerCallback<'a, D, R> =
-    dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
+dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
 
 type ProcessingHandles<R> = Mutex<FuturesUnordered<JoinHandle<anyhow::Result<R>>>>;
 
@@ -74,14 +71,14 @@ impl<D, R> Worker<D, R>
 where
     D: Deserialize<'static> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'static>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'static>,
 {
     pub async fn build<F, C>(
         name: &str,
@@ -91,7 +88,7 @@ where
     ) -> Result<Arc<Worker<D, R>>>
     where
         C: Fn(JobSetPair<D, R>) -> F + Send + Sync + 'static,
-        F: Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
+        F: Future<Output=anyhow::Result<R>> + Send + Sync + 'static,
     {
         let prefix = queue.prefix.to_owned();
         let queue_name = &queue.name;
@@ -252,9 +249,9 @@ where
     }
     pub async fn on<F, T, C>(&self, event: &str, callback: C) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        C: Fn(T) -> F + Send + Sync + 'static,
-        F: Future<Output = ()> + Send + Sync + 'static,
+            for<'de> T: Deserialize<'de> + std::fmt::Debug,
+            C: Fn(T) -> F + Send + Sync + 'static,
+            F: Future<Output=()> + Send + Sync + 'static,
     {
         let emitter = self.emitter.clone();
         let mut emitter = emitter.lock().await;
@@ -262,9 +259,9 @@ where
     }
     pub async fn once<F, T, C>(&self, event: &str, callback: C) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        C: Fn(T) -> F + Send + Sync + 'static,
-        F: Future<Output = ()> + Send + Sync + 'static,
+            for<'de> T: Deserialize<'de> + std::fmt::Debug,
+            C: Fn(T) -> F + Send + Sync + 'static,
+            F: Future<Output=()> + Send + Sync + 'static,
     {
         let emitter = self.emitter.clone();
         let mut emitter = emitter.lock().await;
@@ -318,14 +315,14 @@ async fn extend_locks<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
     options: Arc<WorkerOptions>,
@@ -415,14 +412,14 @@ async fn next_job_from_job_data<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     packed_args: PackedArgs,
     token: Option<String>,
@@ -458,14 +455,14 @@ async fn move_to_active<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     drained: &'static Atomic<bool>,
     block_until: &'static Atomic<u64>,
@@ -489,6 +486,8 @@ async fn move_to_active<
         .move_to_active(token, &options, job_id.clone())
         .await?;
 
+    dbg!(&result);
+
     let (job_data, id, limit_until, delay_until) = result;
     let opt_token = Some(token.to_owned());
 
@@ -504,21 +503,21 @@ async fn move_to_active<
         ),
         opt_token,
     )
-    .await
+        .await
 }
 
 pub async fn get_next_job<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     waiting: Arc<Mutex<Option<String>>>,
     drained: &'static Atomic<bool>,
@@ -532,6 +531,7 @@ pub async fn get_next_job<
     if waiting.lock().await.is_none() {
         let result = wait_for_job(queue.clone(), block_until).await?;
         let copy = result.clone();
+        dbg!(&copy);
         *waiting.lock().await = copy;
         let moved = move_to_active(drained, block_until, queue, options, token, result).await?;
         *waiting.lock().await = None;
@@ -544,19 +544,20 @@ pub async fn get_completed<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     jobs: Arc<ProcessingHandles<Option<Job<D, R>>>>,
 ) -> anyhow::Result<Vec<Job<D, R>>> {
     let mut completed = Vec::new();
     if let Some(handle) = jobs.lock().await.next().await {
+        dbg!(&handle);
         let result = handle.unwrap()?;
         if let Some(job) = result {
             completed.push(job.clone());
@@ -581,17 +582,16 @@ pub async fn process_job<
     'a,
     D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'a>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'a>,
 >(
     args: PackedProcessArgs<D, R>,
-
     mut job: Job<D, R>,
     token: &'static str,
 ) -> anyhow::Result<Option<Job<D, R>>> {
@@ -613,7 +613,10 @@ pub async fn process_job<
                     let pool = queue.manager.pool.clone();
                     let mut scripts = Scripts::new(prefix.to_string(), queue_name, pool);
 
-                    let remove_on_complete = job.opts.remove_on_complete.bool;
+                    let remove_on_complete = match job.opts.remove_on_complete.clone().unwrap() {
+                        RemoveOnCompletionOrFailure::Bool(ans) => ans,
+                        _ => false,
+                    };
 
                     let fetch = !closing.load();
                     let end = scripts
@@ -714,14 +717,14 @@ async fn main_loop<D, R>(
 ) where
     D: Deserialize<'static> + Send + Sync + Clone + 'static + Serialize + std::fmt::Debug,
     R: Send
-        + Sync
-        + Clone
-        + ToRedisArgs
-        + FromRedisValue
-        + Serialize
-        + std::fmt::Debug
-        + 'static
-        + Deserialize<'static>,
+    + Sync
+    + Clone
+    + ToRedisArgs
+    + FromRedisValue
+    + Serialize
+    + std::fmt::Debug
+    + 'static
+    + Deserialize<'static>,
 {
     let (
         id,
@@ -749,6 +752,7 @@ async fn main_loop<D, R>(
             token_prefix += 1;
             let stat_token = to_static_str(format!("{}:{}", id, token_prefix));
             //self.emitter.emit("drained", String::from("")).await;
+            dbg!(stat_token);
             let waiting = waiting.clone();
 
             let queue = queue.clone();

@@ -29,12 +29,13 @@ pub struct Job<D, R> {
     pub repeat_job_key: Option<&'static str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<String>,
-    pub remove_on_complete: RemoveOnCompletionOrFailure,
-    pub remove_on_fail: RemoveOnCompletionOrFailure,
+    pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
     pub processed_on: i64,
     pub finished_on: i64,
     pub discarded: bool,
     pub parent_key: Option<String>,
+    pub with_children_key: Option<String>,
     pub parent: Option<Parent>,
     pub token: &'static str,
     pub remove_deps_on_failure: bool,
@@ -66,6 +67,7 @@ impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
         state.serialize_field("finished_on", &self.finished_on)?;
         state.serialize_field("discarded", &self.discarded)?;
         state.serialize_field("parent_key", &self.parent_key)?;
+        state.serialize_field("with_children_key", &self.with_children_key)?;
         state.serialize_field("parent", &self.parent)?;
         state.end()
     }
@@ -148,6 +150,7 @@ impl<
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
+            with_children_key:None,
             scripts: Arc::new(Mutex::new(Scripts::new(
                 prefix.to_string(),
                 queue_name.to_owned(),
@@ -321,7 +324,11 @@ impl<
 
             let err_message = err.clone();
             let mut job = self.clone();
-            let remove_onfail = self.opts.remove_on_fail.bool;
+            let remove_onfail = match self.opts.remove_on_fail.clone().unwrap() {
+                RemoveOnCompletionOrFailure::Bool(bool) =>bool,
+                _=> false,
+               
+            };
             let result = job
                 .scripts
                 .lock()
