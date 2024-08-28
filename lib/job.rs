@@ -150,7 +150,7 @@ impl<
             failed_reason: None,
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
-            with_children_key:None,
+            with_children_key: None,
             scripts: Arc::new(Mutex::new(Scripts::new(
                 prefix.to_string(),
                 queue_name.to_owned(),
@@ -324,11 +324,7 @@ impl<
 
             let err_message = err.clone();
             let mut job = self.clone();
-            let remove_onfail = match self.opts.remove_on_fail.clone().unwrap() {
-                RemoveOnCompletionOrFailure::Bool(bool) =>bool,
-                _=> false,
-               
-            };
+            let remove_onfail = self.opts.remove_on_fail.clone().unwrap_or_default();
             let result = job
                 .scripts
                 .lock()

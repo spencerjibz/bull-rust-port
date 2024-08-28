@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let worker_opts = WorkerOptions {
         autorun: true,
         concurrency: 1,
+
         ..Default::default()
     };
 
@@ -56,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     dbg!("got here");
     let worker = Worker::build(&QUEUE_NAME, queue, processor, worker_opts).await?;
     println!("got here");
-    let job_count = 6;
+    let job_count = 9;
     for _ in 0..job_count {
         let random_name = Uuid::new_v4().to_string();
         let rand_id: u16 = random();
@@ -75,13 +76,13 @@ async fn main() -> anyhow::Result<()> {
         .on(
             "completed",
             move |(_completed_name, _id, returned_value): (String, String, String)| {
-                copy.fetch_add(1);
                 dbg!(_completed_name);
                 //assert_eq!(id, old_id);
                 assert_eq!(returned_value, "done");
                 //
                 //assert_eq!(completed_name, old_name);
                 println!("{:?} count : {:?}", now.elapsed(), copy.load());
+                copy.fetch_add(1);
 
                 async move {}
             },
@@ -90,6 +91,8 @@ async fn main() -> anyhow::Result<()> {
 
     // tokio::time::sleep(Duration::from_secs(2)).await;
 
-    while count.load() < job_count {}
+    while count.load() < (job_count + 2) {
+        //dbg!(count.load());
+    }
     Ok(())
 }

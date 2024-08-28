@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use anyhow::Ok;
 use anyhow::Result;
 use derive_redis_json::RedisJsonValue;
+
 use maplit::hashmap;
 pub use redis::Script;
 use redis::{FromRedisValue, Value};
@@ -14,11 +15,10 @@ use serde::{Deserialize, Serialize};
 
 //use crate::move_to_finished::{self, move_job_to_finished};
 use crate::enums::ErrorCode::{self, *};
-use crate::move_to_active::move_job_to_active;
-use crate::move_to_finished::move_job_to_finished;
 use crate::redis_connection::*;
 use crate::worker::map_from_vec;
 use crate::Parent;
+use crate::RemoveOnCompletionOrFailure;
 use crate::{job::Job, redis_connection::*};
 use crate::{JobJsonRaw, JobMoveOpts, KeepJobs, MoveToFinishOpts, WorkerOptions};
 
@@ -112,9 +112,6 @@ impl Scripts {
         }
     }
     pub fn to_key(&self, name: &str) -> String {
-        if name.is_empty() {
-            return format!("{}:{}", self.prefix, self.queue_name);
-        }
         format!("{}:{}:{}", self.prefix, self.queue_name, name)
     }
     pub fn get_keys(&self, keys: &[&str]) -> Vec<String> {
@@ -160,7 +157,7 @@ impl Scripts {
         job: &Job<D, R>,
     ) -> anyhow::Result<Option<i64>> {
         let e = job.queue.prefix.to_owned();
-        let prefix = self.keys.get("").unwrap_or(&e);
+        let prefix = self.to_key("");
         let name = job.name;
         let parent = job.parent.clone();
         let parent_key = job.parent_key.clone();
@@ -321,10 +318,8 @@ impl Scripts {
             lock_duration,
             limiter: Some(limiter),
         };
-        dbg!(&move_opts);
 
         let mut connection = &mut self.connection.get().await?;
-        //  let args = (prefix.to_owned(), timestamp as i64, job_id, move_opts);
         let packed_opts = rmp_serde::encode::to_vec_named(&move_opts)?;
 
         let result: MoveToAciveResults = self
@@ -336,7 +331,6 @@ impl Scripts {
             .arg(timestamp)
             .arg(job_id)
             .arg(packed_opts)
-            // add work otpions here
             .invoke_async(connection)
             .await?;
 
@@ -352,12 +346,12 @@ impl Scripts {
         job: &mut Job<D, R>,
         val: String,
         prop_val: &str,
-        should_remove: bool,
+        should_remove: RemoveOnCompletionOrFailure,
         target: &str,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResult> {
+    ) -> anyhow::Result<MoveToFinishedResults> {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
@@ -371,33 +365,23 @@ impl Scripts {
             "paused",
             "meta",
             "pc",
-            target,
         ]);
-        keys.push(self.to_key(job.id.as_str()));
-        keys.push(self.to_key("meta"));
-        keys.push(metrics_key);
+        keys.insert(8, self.to_key(target));
+        keys.insert(9, self.to_key(job.id.as_str()));
+        keys.insert(11, metrics_key);
 
-        let keep_jobs = self.get_keep_jobs(should_remove);
-
-        let max_metrics_size = match &opts.metrics {
-            Some(v) => v.max_data_points,
-            None => 0,
+        let should_remove_key = if target == "completed" {
+            opts.remove_on_completion.clone()
+        } else {
+            opts.remove_on_fail.clone()
         };
-        /*
-                let p_opts = serde_json::to_string(&hashmap! {
-                    "token" => token.to_string(),
-                    "keepJobs" => serde_json::to_string(&keep_jobs).unwrap(),
-                    "limiter" => serde_json::to_string(&opts.limiter).unwrap(),
-                    "lockDuration" => opts.lock_duration.to_string(),
-                    "attempts" => job.attempts.to_string(),
-                    "attemptsMade" => job.attempts_made.to_string(),
-                    "maxMetricsSize" => max_metrics_size.to_string(),
-                    "fpof" => job.opts.fail_parent_on_failure.to_string(), //fail parent on failure
-                })?;
-        */
+        let keep_jobs = self.get_keep_jobs(should_remove_key);
+
+        let max_metrics_size = opts.metrics.clone().map(|m| m.max_data_points.to_string());
+
         let move_to_finished_opts = MoveToFinishOpts {
             token: token.to_string(),
-            keep_jobs: KeepJobs::default(),
+            keep_jobs,
             attempts_made: job.attempts_made,
             attempts: job.attempts,
             lock_duration: opts.lock_duration,
@@ -421,71 +405,60 @@ impl Scripts {
             Some("".to_owned()),
             fetch_next,
             sec_last.to_owned(),
-            move_to_finished_opts,
+            move_to_finished_opts.clone(),
         );
-        /*           encode::write_bin(&mut packed_opts, p_opts.as_bytes())?;
-             let result: Option<R> = self
-                 .commands
-                 .get("moveToFinished")
-                 .unwrap()
-                 .key(keys)
-                 .arg(job.id.as_str())
-                 .arg(timestamp)
-                 .arg(prop_val)
-                 .arg(&val)
-                 .arg(target)
-                 .arg("")
-                 .arg(fetch)
-                 .arg(sec_last)
-                 .arg(packed_opts)
-                 .invoke_async(connection)
-                 .await?;
-        */
+        
+        let packed_opts = rmp_serde::encode::to_vec_named(&move_to_finished_opts)?;
+        let result: MoveToFinishedResults = self
+            .commands
+            .get("moveToFinished")
+            .unwrap()
+            .key(keys)
+            .arg(job.id.as_str())
+            .arg(timestamp)
+            .arg(prop_val)
+            .arg(&val)
+            .arg(target)
+            .arg("")
+            .arg(fetch)
+            .arg(sec_last)
+            .arg(packed_opts)
+            .invoke_async(connection)
+            .await?;
 
-        move_job_to_finished(&keys, args, connection).await
-
-        /*
-        use std::any::{Any, TypeId};
-        if let Some(res) = result {
-            if TypeId::of::<i8>() == res.type_id() {
-                let n = Box::new(res.clone()) as Box<dyn Any>;
-                let n = n.downcast::<i8>().unwrap();
-                if *n < 0 {
-                    self.finished_errors(*n, &job.id, "finished", "active");
-                }
-            }
-            // I do not like this as it is using a sideeffect
-            job.finished_on = timestamp as i64;
-            let m: HashMap<String, String> = HashMap::new();
-            let expected = (Some(m), Some("".to_string()), 0_u64, Some(1_u64));
-
-            let slice_of_string = print_type_of(&expected);
-
-            if print_type_of(&res) == slice_of_string {
-                let n = Box::new(res) as Box<dyn Any>;
-                let n = n.downcast::<MoveToAciveResult>().unwrap();
-                let v = *n;
-
-                let returned_result = v;
-
-                return Ok(Some(returned_result));
-            }
+        if let MoveToFinishedResults::Error(code) = result {
+            finished_errors(code, &job.id, "finished", "active");
         }
-        */
+
+        Ok(result)
     }
 
     //create a function that generates timestamps;
 
-    fn get_keep_jobs(&self, should_remove: bool) -> KeepJobs {
-        if should_remove {
-            return KeepJobs {
+    fn get_keep_jobs(&self, should_remove: RemoveOnCompletionOrFailure) -> KeepJobs {
+        match should_remove {
+            RemoveOnCompletionOrFailure::Bool(bool) => {
+                if bool {
+                    KeepJobs {
+                        age: None,
+                        count: Some(0),
+                    }
+                } else {
+                    KeepJobs {
+                        age: None,
+                        count: Some(-1),
+                    }
+                }
+            }
+            RemoveOnCompletionOrFailure::Int(num) => KeepJobs {
+                count: Some(num),
                 age: None,
-                count: Some(0),
-            };
-        }
-        KeepJobs {
-            age: None,
-            count: Some(-1),
+            },
+            RemoveOnCompletionOrFailure::Opts(keep) => keep,
+            RemoveOnCompletionOrFailure::None => KeepJobs {
+                count: Some(-1),
+                age: None,
+            },
         }
     }
 
@@ -563,20 +536,7 @@ impl Scripts {
             .arg(stalled_interval)
             .invoke_async(conn)
             .await?;
-        /*
 
-           let result = check_stalled_jobs(
-            &keys,
-            max_stalled_count as usize,
-            &prefix,
-            timestamp,
-            stalled_interval,
-            con,
-        )
-        .await?;
-
-            */
-        // println!(" stalled {result:?}");
         Ok(result)
     }
     pub async fn update_progress<P: Serialize>(
@@ -619,11 +579,11 @@ impl Scripts {
         &mut self,
         job: &mut Job<D, R>,
         val: String,
-        remove_on_complete: bool,
+        remove_on_complete: RemoveOnCompletionOrFailure,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResult> {
+    ) -> anyhow::Result<MoveToFinishedResults> {
         self.move_to_finished(
             job,
             val,
@@ -643,11 +603,11 @@ impl Scripts {
         &mut self,
         job: &mut Job<D, R>,
         failed_reason: String,
-        remove_on_failure: bool,
+        remove_on_failure: RemoveOnCompletionOrFailure,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResult> {
+    ) -> anyhow::Result<MoveToFinishedResults> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -860,7 +820,38 @@ impl From<MoveToAciveResults> for MoveToAciveResult {
 }
 /// MoveToFinishedResult (finished_job_data,job_id, expireTime, delay
 pub type MoveToFinishedResult = (Option<crate::JobJsonRaw>, Option<String>, i64, Option<i64>);
+
 // test
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MoveToFinishedResults {
+    MoveToNext(MoveToAciveResults),
+    Completed,
+    Error(i8),
+}
+
+impl FromRedisValue for MoveToFinishedResults {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        use std::result::Result::Ok;
+        match *v {
+            Value::Int(0) => {
+                // If the integer is 0, it indicates "Completed"
+                Ok(MoveToFinishedResults::Completed)
+            }
+            Value::Int(err_code) => {
+                // If it's a non-zero integer, it indicates an error code
+                Ok(MoveToFinishedResults::Error(err_code as i8))
+            }
+            _ => {
+                // Try to interpret it as a `MoveToActiveResults`
+                match MoveToAciveResults::from_redis_value(v) {
+                    Ok(result) => Ok(MoveToFinishedResults::MoveToNext(result)),
+                    Err(err) => Err(err),
+                }
+            }
+        }
+    }
+}
 
 pub fn get_script(script_name: &'static str) -> String {
     use std::fs;

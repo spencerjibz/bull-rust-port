@@ -80,6 +80,7 @@ pub enum RemoveOnCompletionOrFailure {
     Bool(bool), // if true, remove the job when it completes
     Int(i64),   //  number is passed, its specifies the maximum amount of jobs to keeps
     Opts(KeepJobs),
+    None,
 }
 
 impl Default for RemoveOnCompletionOrFailure {
@@ -124,8 +125,10 @@ pub struct MoveToFinishOpts {
     pub token: String,
     pub attempts: i64,
     pub attempts_made: i64,
-    pub max_metrics_size: i64,
+    pub max_metrics_size: Option<String>,
+    #[serde(rename = "fpof")]
     pub fail_parent_on_failure: bool,
+    #[serde(rename = "rdof")]
     pub remove_deps_on_failure: bool,
     pub limiter: Limiter,
     pub lock_duration: i64,
@@ -156,7 +159,9 @@ pub struct WorkerOptions {
     pub connection: String, // redis connection string
     pub limiter: Limiter, //
     pub metrics: Option<MetricOptions>, // metrics options
+    #[serde(rename = "removeOnComplete")]
     pub remove_on_completion: RemoveOnCompletionOrFailure,
+    #[serde(rename = "removeOnFail")]
     pub remove_on_fail: RemoveOnCompletionOrFailure,
 }
 
@@ -192,10 +197,10 @@ impl fmt::Debug for QueueSettings {
 
 impl Default for WorkerOptions {
     fn default() -> Self {
-        let cpu_count = num_cpus::get() / 2;
+        let cpu_count = num_cpus::get();
         Self {
             autorun: false,
-            concurrency: 1,
+            concurrency: cpu_count,
             max_stalled_count: 1,
             stalled_interval: 3000,
             lock_duration: 3000,
