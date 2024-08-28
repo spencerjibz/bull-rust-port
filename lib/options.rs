@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::HashMap, fmt::Display};
 //implement fmt::Debug for QueueSettings
+use std::fmt;
 use std::sync::Arc;
-use std::{fmt, i64};
 
 use crate::to_static_str;
 use crate::StoredFn;

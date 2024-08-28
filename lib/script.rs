@@ -1,4 +1,6 @@
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::field_reassign_with_default)]
+
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -623,7 +625,7 @@ impl Scripts {
         Ok(result)
     }
 
-    pub fn movee_to_delayed_args(
+    pub fn move_to_delayed_args(
         &self,
         job_id: &str,
         timestamp: i64,
