@@ -396,18 +396,6 @@ impl Scripts {
 
         let mut connection = &mut self.connection.get().await?;
 
-        let args = (
-            job.id.clone(),
-            timestamp as i64,
-            prop_val.to_owned(),
-            val.clone(),
-            target.to_string(),
-            Some("".to_owned()),
-            fetch_next,
-            sec_last.to_owned(),
-            move_to_finished_opts.clone(),
-        );
-        
         let packed_opts = rmp_serde::encode::to_vec_named(&move_to_finished_opts)?;
         let result: MoveToFinishedResults = self
             .commands
@@ -492,7 +480,7 @@ impl Scripts {
         token: &str,
         duration: i64,
     ) -> anyhow::Result<u64> {
-        let stalled = self.keys.get("stalled").unwrap();
+        let stalled = self.to_key("stalled");
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
         let conn = &mut self.connection.get().await?;
         let result: u64 = self
@@ -544,10 +532,7 @@ impl Scripts {
         job_id: &str,
         progress: P,
     ) -> anyhow::Result<Option<i8>> {
-        let keys = [
-            self.to_key(job_id),
-            self.keys.get("events").unwrap().to_string(),
-        ];
+        let keys = [self.to_key(job_id), self.to_key("events")];
 
         let progress = serde_json::to_string(&progress)?;
         let conn = &mut self.connection.get().await?;
@@ -707,29 +692,16 @@ impl Scripts {
     }
 
     pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
-        let mut keys = self.get_keys(&[""]);
-        let args = vec![
-            job_id,
-            if remove_children {
-                "1".to_owned()
-            } else {
-                "0".to_owned()
-            },
-        ];
+        let prefix = self.to_key("");
 
         //mutate the first value in the keys array
 
-        for (i, v) in keys.iter_mut().enumerate() {
-            if i == 0 {
-                v.push(':');
-            }
-        }
         let mut conn = self.connection.get().await?;
         self.commands
             .get("remove")
             .unwrap()
-            .key(keys)
-            .arg(args)
+            .key(vec![prefix])
+            .arg(job_id)
             .invoke_async(&mut conn)
             .await?;
 
