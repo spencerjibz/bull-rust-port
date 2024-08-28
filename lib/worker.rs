@@ -201,9 +201,7 @@ where
             self.processor.clone(),
         );
 
-        dbg!("got here calculator");
         self.start_timers().await;
-        dbg!("got here");
 
         let main_task = tokio::spawn(main_loop(packed_args, self.processing.clone()));
         let current_task = self.main_task.clone();
