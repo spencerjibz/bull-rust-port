@@ -282,7 +282,7 @@ impl<
                     move_to_failed = true;
                 }
                 let timestamp = generate_timestamp()?;
-                let (keys, args) = self.scripts.lock().await.movee_to_delayed_args(
+                let (keys, args) = self.scripts.lock().await.move_to_delayed_args(
                     &self.id,
                     timestamp as i64 + num,
                     token,

@@ -32,9 +32,7 @@ impl BackOff {
         self.builtin_strategies.insert(name, Arc::new(strategy));
     }
     pub fn normalize(backoff: Option<BackOffJobOptions>) -> Option<BackOffOptions> {
-        if backoff.is_none() {
-            return None;
-        }
+        backoff.as_ref()?;
         let backoff = backoff.unwrap();
         match backoff {
             BackOffJobOptions::Number(num) => {
