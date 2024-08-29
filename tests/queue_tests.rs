@@ -43,7 +43,7 @@ mod queue {
 
         assert_eq!(job.id, id.clone());
         // cleanup
-        queue.remove_job(id, false).await?;
+        queue.obliterate(true).await?;
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
@@ -72,6 +72,8 @@ mod queue {
         assert_eq!(job.opts.delay, 1000);
         // cleanup
         queue.remove_job(id, false).await?;
+        queue.obliterate(true).await?;
+
         Ok(())
     }
 
@@ -96,6 +98,7 @@ mod queue {
         queue.remove_job(id.clone(), false).await?;
         let result: Option<Job<Data, String>> = Job::from_id(queue, &job.id).await?;
         assert_eq!(result, None);
+        queue.obliterate(true).await?;
         Ok(())
     }
 
@@ -117,7 +120,7 @@ mod queue {
         let state = queue.get_job_state(&job.id).await?;
 
         assert_eq!(state, "waiting".to_string());
-        queue.remove_job(job.id, false).await?;
+        queue.obliterate(true).await;
 
         Ok(())
     }
@@ -133,13 +136,22 @@ mod queue {
         queue.resume().await?;
         paused = queue.is_paused().await?;
         assert!(!paused);
+        queue.obliterate(true).await?;
 
         Ok(())
     }
 
     #[tokio_shared_rt::test(shared)]
     async fn trim_events_manually() -> anyhow::Result<()> {
-        let queue = QUEUE.force().await;
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+
+        let queue = Queue::new("test_copy", redis_opts, QueueOptions::default())
+            .await
+            .unwrap();
         let mut conn = queue.manager.pool.get().await?;
         let job_opts = JobOptions::default();
         // add multiple jobs
@@ -153,12 +165,12 @@ mod queue {
             .add("test", "3".to_ascii_lowercase(), job_opts, None)
             .await?;
         let events_length: isize = redis::cmd("XLEN")
-            .arg("bull:test:events")
+            .arg("bull:test_copy:events")
             .query_async(&mut conn)
             .await?;
         println!("events_length: {}", events_length);
         assert_eq!(events_length, 4);
-        let count = queue.trim_events(4).await?;
+        //let count = queue.trim_events(4).await?;
         queue.obliterate(true).await?;
 
         Ok(())
