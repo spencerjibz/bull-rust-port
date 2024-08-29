@@ -136,7 +136,6 @@ mod queue {
         queue.resume().await?;
         paused = queue.is_paused().await?;
         assert!(!paused);
-        queue.obliterate(true).await?;
 
         Ok(())
     }
