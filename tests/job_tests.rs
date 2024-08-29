@@ -69,6 +69,7 @@ mod job {
             Job::<Data, ReturnedData>::from_json(QUEUE.force().await, contents, "207").await?;
 
         assert_eq!(job.name, "QmTkNd9nQHasSbQwmcsRkBeiFsMgqhgDNnWqYRgwZLmCgP");
+        queue.obliterate(true).await?;
         Ok(())
     }
 }
