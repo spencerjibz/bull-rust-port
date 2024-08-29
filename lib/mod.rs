@@ -14,5 +14,3 @@ pub mod backoff;
 pub mod timer;
 pub mod worker;
 pub use backoff::*;
-pub mod script_functions;
-pub(crate) use script_functions::*;
