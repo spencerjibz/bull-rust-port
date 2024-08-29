@@ -129,10 +129,7 @@ impl Queue {
         Ok(())
     }
 
-    pub async fn trim_events<RV: FromRedisValue + Send + Sync>(
-        &self,
-        max_length: usize,
-    ) -> anyhow::Result<RV> {
+    pub async fn trim_events(&self, max_length: usize) -> anyhow::Result<i8> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
         let mut conn = self.manager.pool.get().await?;
