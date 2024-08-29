@@ -95,7 +95,6 @@ mod queue {
 
         queue.remove_job(id.clone(), false).await?;
         let result: Option<Job<Data, String>> = Job::from_id(queue, &job.id).await?;
-
         assert_eq!(result, None);
         Ok(())
     }
@@ -139,14 +138,11 @@ mod queue {
     }
 
     #[tokio_shared_rt::test(shared)]
-    #[ignore]
     async fn trim_events_manually() -> anyhow::Result<()> {
         let queue = QUEUE.force().await;
         let mut conn = queue.manager.pool.get().await?;
         let job_opts = JobOptions::default();
-
         // add multiple jobs
-
         let _job1: Job<String, String> = queue
             .add("test", "1".to_ascii_lowercase(), job_opts.clone(), None)
             .await?;
@@ -156,16 +152,13 @@ mod queue {
         let _job3: Job<String, String> = queue
             .add("test", "3".to_ascii_lowercase(), job_opts, None)
             .await?;
-
         let events_length: isize = redis::cmd("XLEN")
             .arg("bull:test:events")
             .query_async(&mut conn)
             .await?;
         println!("events_length: {}", events_length);
-
-        //assert_eq!(events_length, 8);
-
-        queue.trim_events(4).await?;
+        assert_eq!(events_length, 4);
+        let count = queue.trim_events(4).await?;
         queue.obliterate(true).await?;
 
         Ok(())
