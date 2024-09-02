@@ -26,8 +26,8 @@ async fn main() -> anyhow::Result<()> {
     println!("{:#?}", job);
     use chrono::{DateTime, NaiveDateTime, Utc};
     let (finished_on, processed_on, date) = (job.finished_on, job.processed_on, job.timestamp);
-    let finished_on = NaiveDateTime::from_timestamp_millis(finished_on).unwrap();
-    let processed_on = NaiveDateTime::from_timestamp_millis(processed_on).unwrap();
+    let finished_on = NaiveDateTime::from_timestamp_millis(finished_on.unwrap() as i64).unwrap();
+    let processed_on = NaiveDateTime::from_timestamp_millis(processed_on.unwrap() as i64).unwrap();
     let date = NaiveDateTime::from_timestamp_millis(date);
     println!("finished_on: {:#?}", finished_on);
     println!("processed_on: {:#?}", processed_on);

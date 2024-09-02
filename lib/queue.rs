@@ -1,21 +1,31 @@
-use crate::job::Job;
-use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
-use crate::redis_connection::{Client, RedisConnection, RedisOpts};
-use crate::script;
-use anyhow::Ok;
-use deadpool_redis::{Connection, Pool, Runtime};
-use futures::future::ok;
-use redis::{AsyncCommands, FromRedisValue, Script, ToRedisArgs};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::future::Future;
-pub type ListenerCallback<T> = dyn FnMut(T) -> (dyn Future<Output = ()> + Send + Sync + 'static);
-use crate::RedisConnectionTrait;
-use futures::lock::Mutex;
-use redis::streams::StreamMaxlen;
-use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use anyhow::Ok;
+use deadpool_redis::Connection;
+use futures::lock::Mutex;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use redis::streams::StreamMaxlen;
+use redis::{AsyncCommands, FromRedisValue};
+use serde::{Deserialize, Serialize};
+
+use crate::enums::{PttlError, QueueError};
+use crate::job::{self, Job};
+use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
+use crate::redis_connection::{RedisConnection, RedisOpts};
+use crate::{script, JobJsonRaw};
+use crate::{to_static_str, RedisConnectionTrait};
+
+pub type ListenerCallback<T> = dyn FnMut(T) -> (dyn Future<Output = ()> + Send + Sync + 'static);
+
+pub struct Logs {
+    pub logs: Vec<String>,
+    pub count: i64,
+}
 #[derive(Clone)]
 pub struct Queue {
     pub prefix: &'static str,
@@ -69,32 +79,22 @@ impl Queue {
     ) -> anyhow::Result<Job<D, R>> {
         let copy = self.clone();
         let mut job = Job::<D, R>::new(name, self, data, opts, job_id).await?;
-        let mut scripts = self.scripts.lock().await;
-        let job_id = scripts.add_job(&job).await?;
+        let job_id = self.scripts.lock().await.add_job(&job).await?;
         job.id = serde_json::to_string(&job_id)?;
 
         Ok(job)
     }
 
-    pub async fn pause<
-        'c,
-        R: Deserialize<'c> + Serialize + FromRedisValue + Send + Sync + 'static,
-    >(
-        &'c self,
-    ) -> anyhow::Result<R> {
-        let result = self.scripts.lock().await.pause(true).await?;
-
-        Ok(result)
+    pub async fn pause(&self) -> anyhow::Result<()> {
+        self.scripts.lock().await.pause(true).await
     }
-    pub async fn resume<R: FromRedisValue>(&self) -> anyhow::Result<R> {
-        let result = self.scripts.lock().await.pause(false).await?;
-
-        Ok(result)
+    pub async fn resume(&self) -> anyhow::Result<()> {
+        self.scripts.lock().await.pause(false).await
     }
 
-    pub async fn is_paused<RV: FromRedisValue + Sync + Send>(&self) -> anyhow::Result<RV> {
-        let b = format!("bull:{}:meta", self.name);
-        let key = self.opts.prefix.unwrap_or(&b);
+    pub async fn is_paused(&self) -> anyhow::Result<bool> {
+        let prefix = self.opts.prefix.unwrap_or("bull");
+        let key = format!("{}:{}:meta", prefix, self.name);
         let mut conn = self.manager.pool.get().await?;
 
         let paused_key_exists = redis::Cmd::hexists(key, "paused")
@@ -120,7 +120,7 @@ impl Queue {
                 .scripts
                 .lock()
                 .await
-                .retry_jobs::<i64>(opts.state.clone(), opts.count, opts.timestamp)
+                .retry_jobs(opts.state.clone(), opts.count, opts.timestamp)
                 .await?;
             if cursor == 0 {
                 break;
@@ -129,6 +129,47 @@ impl Queue {
         Ok(())
     }
 
+    pub async fn get_job_logs(
+        &self,
+        job_id: &str,
+        range: Option<RangeInclusive<isize>>,
+        asc: bool,
+    ) -> anyhow::Result<Logs> {
+        let scripts = self.scripts.lock().await;
+        let key = scripts.to_key(format!("{job_id}:logs").as_str());
+        let mut con = self.manager.pool.get().await?;
+        let mut pipeline = redis::pipe();
+        let mut start = 0;
+        let mut end = -1;
+        if let Some(range) = range {
+            start = *range.start();
+            end = *range.end()
+        };
+        match asc {
+            true => &mut pipeline.lrange(&key, start, end),
+            _ => &mut pipeline.lrange(&key, -(end + 1), -(start + 1)),
+        };
+        pipeline.llen(key);
+        let (mut logs, count): (Vec<String>, i64) = pipeline.query_async(&mut con).await?;
+        if !asc {
+            logs.reverse()
+        }
+        Ok(Logs { logs, count })
+    }
+    pub async fn get_rate_limit_ttl(&self) -> Result<i64, QueueError> {
+        use std::result::Result::Ok;
+        let limiter_key = self.scripts.lock().await.to_key("limiter");
+        let mut con = self.manager.pool.get().await?;
+        let result: i64 = redis::Cmd::pttl(&limiter_key).query_async(&mut con).await?;
+
+        match result {
+            -1 => Err(QueueError::RedisPttLError(PttlError::NoExpirationWithKey(
+                limiter_key,
+            ))),
+            -2 => Err(QueueError::RedisPttLError(PttlError::KeyNotFound)),
+            _ => Ok(result),
+        }
+    }
     pub async fn trim_events(&self, max_length: usize) -> anyhow::Result<i8> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
@@ -160,7 +201,44 @@ impl Queue {
 
         Ok(counts)
     }
+    pub async fn get_jobs(
+        &self,
+        types: &[&'static str],
+        range: Option<RangeInclusive<isize>>,
+        asc: bool,
+    ) -> anyhow::Result<(Vec<JobJsonRaw>)> {
+        let mut start = 0;
+        let mut end = -1;
+        if let Some(range) = range {
+            start = *range.start();
+            end = *range.end()
+        };
+        let current_type = self.sanitize_job_types(types);
 
+        let job_ids = self
+            .scripts
+            .lock()
+            .await
+            .get_ranges(types, start, end, asc)
+            .await?;
+
+        let mut result_set = vec![];
+        let mut futures: FuturesUnordered<_> = job_ids
+            .into_iter()
+            .flatten()
+            .map(|id| async {
+                let mut job = JobJsonRaw::from_id(id.clone(), self).await?;
+                job.id = to_static_str(id);
+                Ok(job)
+            })
+            .collect();
+
+        while let Some(std::result::Result::Ok(job)) = futures.next().await {
+            result_set.push(job);
+        }
+        result_set.sort_by(|a, b| a.id.cmp(b.id));
+        Ok(result_set)
+    }
     fn sanitize_job_types(&self, types: &[&'static str]) -> Vec<&'static str> {
         if !types.is_empty() {
             let mut v = types.to_vec();
@@ -186,14 +264,16 @@ impl Queue {
     }
 
     pub async fn remove_job(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
-        let mut scripts = self.scripts.lock().await;
-        scripts.remove(job_id, remove_children).await?;
+        self.scripts
+            .lock()
+            .await
+            .remove(job_id, remove_children)
+            .await?;
         Ok(())
     }
 
     pub async fn get_job_state(&self, job_id: &str) -> anyhow::Result<String> {
-        let mut scripts = self.scripts.lock().await;
-        let state = scripts.get_state(job_id).await?;
+        let state = self.scripts.lock().await.get_state(job_id).await?;
         Ok(state)
     }
 
@@ -202,7 +282,6 @@ impl Queue {
     }
 }
 
-use std::fmt;
 impl fmt::Debug for Queue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Queue")

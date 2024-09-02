@@ -19,9 +19,9 @@ pub struct Job<D, R> {
     pub timestamp: i64,
     pub attempts_made: i64,
     pub attempts: i64,
-    pub delay: i64,
-    pub id: String,       // jsonString
-    pub progress: String, // 0 to 100
+    pub delay: u64,
+    pub id: String,               // jsonString
+    pub progress: Option<String>, // 0 to 100
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
@@ -31,14 +31,15 @@ pub struct Job<D, R> {
     pub stack_trace: Vec<String>,
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
-    pub processed_on: i64,
-    pub finished_on: i64,
+    pub processed_on: Option<u64>,
+    pub finished_on: Option<u64>,
     pub discarded: bool,
     pub parent_key: Option<String>,
     pub with_children_key: Option<String>,
     pub parent: Option<Parent>,
     pub token: &'static str,
     pub remove_deps_on_failure: bool,
+    pub priority: i64,
 }
 
 impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
@@ -96,10 +97,10 @@ impl<
     > Job<D, R>
 {
     pub fn is_completed(&self) -> bool {
-        self.return_value.is_some() && self.finished_on > 0
+        self.return_value.is_some() && self.finished_on > Some(0)
     }
     async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
-        self.progress = serde_json::to_string(&progress)?;
+        self.progress = Some(serde_json::to_string(&progress)?);
         self.scripts
             .lock()
             .await
@@ -127,7 +128,7 @@ impl<
         let id = if let Some(id) = job_id {
             id
         } else {
-            opts.job_id.unwrap()
+            opts.job_id.unwrap_or_default()
         };
         let que = queue.clone();
 
@@ -136,16 +137,16 @@ impl<
             queue: Arc::new(que),
             name: to_static_str(name.to_string()),
             id,
-            progress: String::new(),
+            progress: None,
             timestamp: opts.timestamp.unwrap(),
-            delay: opts.delay,
+            delay: opts.delay as u64,
             attempts_made: 0,
             attempts: opts.attempts,
             data,
             return_value: None,
             remove_on_complete: opts.remove_on_complete,
-            processed_on: 0,
-            finished_on: 0,
+            processed_on: None,
+            finished_on: None,
             repeat_job_key: None,
             failed_reason: None,
             stack_trace: vec![],
@@ -161,6 +162,7 @@ impl<
             parent,
             token: "",
             remove_deps_on_failure: false,
+            priority: 0,
         })
     }
     pub async fn from_map(
@@ -196,26 +198,19 @@ impl<
 
         let mut job = Self::new(name, queue, data, opts, None).await?;
         job.id = job_id.to_string();
-        job.progress = json.progress.to_string();
-        job.attempts_made = json.attempts_made.parse().unwrap_or_default();
-        job.timestamp = json.timestamp.parse().unwrap_or_default();
-        job.delay = json.delay.parse().unwrap_or_default();
-        if !json.return_value.is_empty() {
-            let data = to_static_str(json.return_value.to_string());
+        job.progress = json.progress.map(|v| v.to_owned());
+        job.attempts_made = json.attempts_made.unwrap_or_default();
+        job.timestamp = json.timestamp.unwrap_or_default() as i64;
+        job.delay = json.delay.unwrap_or_default();
+        if let Some(returned) = json.return_value {
+            let data = to_static_str(returned.to_string());
             let return_value = serde_json::from_str::<R>(data)?;
             job.return_value = Some(return_value);
         }
-        job.finished_on = json
-            .finished_on
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default();
-        job.processed_on = json
-            .processed_on
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default();
-        job.failed_reason = Some(json.failed_reason.to_string());
+        job.finished_on = json.finished_on;
+        job.processed_on = json.processed_on;
+        job.failed_reason = json.failed_reason.map(|v| v.to_owned());
+        job.priority = json.priority.unwrap_or_default();
 
         job.repeat_job_key = json.rjk;
 
@@ -342,10 +337,33 @@ impl<
             finished_on = generate_timestamp()?;
         }
         if finished_on > 0 {
-            self.finished_on = finished_on as i64;
+            self.finished_on = Some(finished_on);
         }
 
         Ok(())
+    }
+
+    pub async fn add_log(
+        &self,
+        job_id: &str,
+        log_row: &str,
+        keep_logs: Option<isize>,
+    ) -> anyhow::Result<isize> {
+        let scripts = self.scripts.lock().await;
+        let key = scripts.to_key(format!("{job_id}:logs").as_str());
+        let mut connection = scripts.connection.get().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.rpush(&key, log_row);
+
+        if let Some(log_count) = keep_logs {
+            pipeline.ltrim(&key, -log_count, -1);
+        }
+
+        let result: Vec<isize> = pipeline.query_async(&mut connection).await?;
+        if let Some(count) = keep_logs {
+            return Ok(std::cmp::min(count, result[0]));
+        }
+        Ok(result[0])
     }
 
     pub async fn save_to_stacktrace(
@@ -386,7 +404,7 @@ impl<
         Ok(string)
     }
     pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
-        let mut file = std::fs::File::create(path)?;
+        let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
 
         Ok(())

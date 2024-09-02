@@ -3,10 +3,13 @@ use std::{borrow::Borrow, collections::HashMap, fmt::Display};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::to_static_str;
+use crate::worker::map_from_vec;
 use crate::StoredFn;
+use crate::{to_static_str, Queue};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use deadpool_redis::Connection;
 pub use derive_redis_json::RedisJsonValue;
+use redis_derive::FromRedisValue;
 pub use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
@@ -102,7 +105,7 @@ impl Default for JobOptions {
         Self {
             priority: 0,
             timestamp: Some((timestamp * 1000.0).round() as i64),
-            job_id: Some(id.to_string()),
+            job_id: None,
             delay: 0,
             attempts: 0,
             remove_on_complete: Some(remove_opts.clone()),
@@ -230,30 +233,25 @@ pub struct JobJsonRaw {
     pub name: &'static str,
     #[serde(borrow)]
     pub data: &'static str,
-    #[serde(borrow)]
-    pub delay: &'static str,
+    pub delay: Option<u64>,
     #[serde(borrow)]
     pub opts: &'static str,
     #[serde(borrow)]
-    pub progress: &'static str,
+    pub progress: Option<&'static str>,
+    pub attempts_made: Option<i64>,
+    pub timestamp: Option<u64>,
     #[serde(borrow)]
-    pub attempts_made: &'static str,
-    #[serde(borrow)]
-    pub timestamp: &'static str,
-    #[serde(borrow)]
-    pub failed_reason: &'static str,
-
+    pub failed_reason: Option<&'static str>,
     pub stack_trace: Vec<String>,
     #[serde(borrow)]
-    pub return_value: &'static str,
+    pub return_value: Option<&'static str>,
     #[serde(borrow)]
     pub parent: Option<&'static str>,
     #[serde(borrow)]
     pub rjk: Option<&'static str>,
-    #[serde(borrow)]
-    pub finished_on: Option<&'static str>,
-    #[serde(borrow)]
-    pub processed_on: Option<&'static str>,
+    pub finished_on: Option<u64>,
+    pub processed_on: Option<u64>,
+    pub priority: Option<i64>,
 }
 
 impl JobJsonRaw {
@@ -265,24 +263,46 @@ impl JobJsonRaw {
                 "id" => job.id = v,
                 "name" => job.name = v,
                 "data" => job.data = v,
-                "delay" => job.delay = v,
+                "delay" => job.delay = v.parse().map(Some).unwrap_or_default(),
                 "opts" => job.opts = v,
-                "progress" => job.progress = v,
-                "attempts_made" | "attemptsMade" => job.attempts_made = v,
-                "timestamp" => job.timestamp = v,
-                "failed_reason" | "failedReason" => job.failed_reason = v,
+                "progress" => job.progress = if !v.is_empty() { Some(v) } else { None },
+                "attempts_made" | "attemptsMade" => {
+                    job.attempts_made = v.parse().map(Some).unwrap_or_default()
+                }
+                "timestamp" => job.timestamp = v.parse().map(Some).unwrap_or_default(),
+                "failed_reason" | "failedReason" => {
+                    job.failed_reason = if !v.is_empty() { Some(v) } else { None }
+                }
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_str(v)?,
                 "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
-                | "returnedValue" => job.return_value = v,
+                | "returnedValue" => job.return_value = if !v.is_empty() { Some(v) } else { None },
                 "parent" => job.parent = Some(v),
                 "rjk" => job.rjk = Some(v),
-                "finished_on" | "finishedOn" => job.finished_on = Some(v),
-                "processed_on" | "processedOn" => job.processed_on = Some(v),
+                "finished_on" | "finishedOn" => {
+                    job.finished_on = v.parse().map(Some).unwrap_or_default()
+                }
+                "processed_on" | "processedOn" => {
+                    job.processed_on = v.parse().map(Some).unwrap_or_default()
+                }
+                "priority" => job.priority = v.parse().map(Some).unwrap_or_default(),
                 _ => (),
             }
         }
 
         Ok(job)
+    }
+
+    pub async fn from_id(job_id: String, queue: &Queue) -> anyhow::Result<JobJsonRaw> {
+        let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
+        let mut conn = queue.manager.pool.clone().get().await?;
+        let raw_data: Vec<String> = redis::Cmd::hgetall(key).query_async(&mut conn).await?;
+
+        let map = map_from_vec(&raw_data);
+
+        if raw_data.is_empty() {
+            return Err(anyhow::Error::msg("job not failed"));
+        }
+        JobJsonRaw::from_map(map)
     }
 
     pub fn from_value_map(map: HashMap<String, serde_json::Value>) -> anyhow::Result<JobJsonRaw> {
@@ -292,20 +312,35 @@ impl JobJsonRaw {
                 "id" => job.id = to_static_str(v.as_str().unwrap_or("").to_string()),
                 "name" => job.name = to_static_str(v.as_str().unwrap_or("").to_string()),
                 "data" => job.data = to_static_str(v.as_str().unwrap_or("").to_string()),
-                "delay" => job.delay = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "delay" => {
+                    job.delay = to_static_str(v.as_str().unwrap_or("").to_string())
+                        .parse()
+                        .map(Some)
+                        .unwrap_or_default()
+                }
                 "opts" => job.opts = to_static_str(v.as_str().unwrap_or("").to_string()),
-                "progress" => job.progress = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "progress" => {
+                    job.progress = Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                }
                 "attempts_made" | "attemptsMade" => {
                     job.attempts_made = to_static_str(v.as_str().unwrap_or("").to_string())
+                        .parse()
+                        .map(Some)
+                        .unwrap_or_default()
                 }
-                "timestamp" => job.timestamp = to_static_str(v.as_str().unwrap_or("").to_string()),
+                "timestamp" => {
+                    job.timestamp = to_static_str(v.as_str().unwrap_or("").to_string())
+                        .parse()
+                        .map(Some)
+                        .unwrap_or_default()
+                }
                 "failed_reason" | "failedReason" => {
-                    job.failed_reason = to_static_str(v.as_str().unwrap_or("").to_string())
+                    job.failed_reason = Some(to_static_str(v.as_str().unwrap_or("").to_string()))
                 }
                 "stack_trace" | "stacktrace" => job.stack_trace = serde_json::from_value(v)?,
                 "returnvalue" | "return_value" | "returnValue" | "returnedvalue"
                 | "returnedValue" => {
-                    job.return_value = to_static_str(v.as_str().unwrap_or("").to_string())
+                    job.return_value = Some(to_static_str(v.as_str().unwrap_or("").to_string()))
                 }
                 "parent" => {
                     job.parent = if v.is_null() {
@@ -325,14 +360,30 @@ impl JobJsonRaw {
                     job.finished_on = if v.is_null() {
                         None
                     } else {
-                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                        to_static_str(v.as_str().unwrap_or("").to_string())
+                            .parse()
+                            .map(Some)
+                            .unwrap_or_default()
                     }
                 }
                 "processed_on" | "processedOn" => {
                     job.processed_on = if v.is_null() {
                         None
                     } else {
-                        Some(to_static_str(v.as_str().unwrap_or("").to_string()))
+                        to_static_str(v.as_str().unwrap_or("").to_string())
+                            .parse()
+                            .map(Some)
+                            .unwrap_or_default()
+                    }
+                }
+                "priority" => {
+                    job.priority = if v.is_null() {
+                        None
+                    } else {
+                        to_static_str(v.as_str().unwrap_or("").to_string())
+                            .parse()
+                            .map(Some)
+                            .unwrap_or_default()
                     }
                 }
                 _ => (),
@@ -351,7 +402,7 @@ impl JobJsonRaw {
         Ok(json)
     }
     pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
-        let mut file = std::fs::File::create(path)?;
+        let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
 
         Ok(())

@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::Ok("done".to_owned())
     };
     let now = Instant::now();
-    dbg!("got here");
+
     let worker = Worker::build(&QUEUE_NAME, queue, processor, worker_opts).await?;
     println!("got here");
     let job_count = 9;

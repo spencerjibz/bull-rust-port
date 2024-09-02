@@ -183,8 +183,6 @@ where
             return Err(anyhow::anyhow!("Worker is already running"));
         }
 
-        dbg!("got here");
-
         let packed_args = (
             self.id.clone(),
             self.closed,
