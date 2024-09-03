@@ -107,6 +107,7 @@ impl Queue {
         self.pause().await?;
         loop {
             let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
+            dbg!(cursor);
             if cursor == 0 {
                 break;
             }

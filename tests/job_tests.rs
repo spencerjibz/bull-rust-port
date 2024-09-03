@@ -75,8 +75,21 @@ mod job {
 
     #[tokio_shared_rt::test]
     async fn set_and_get_progress_as_number() -> anyhow::Result<()> {
-        let queue = QUEUE.force().await;
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
 
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+        let prefix = "custom";
+        let queue = Queue::new(
+            "test_progress_as_an_number",
+            redis_opts,
+            QueueOptions {
+                prefix: Some(prefix),
+                ..Default::default()
+            },
+        )
+        .await?;
         let job_opts = JobOptions::default();
         // add multiple jobs
         let mut job: Job<String, String> = queue
@@ -84,7 +97,7 @@ mod job {
             .await?;
         let _ = job.update_progress(64).await;
 
-        let stored_job = Job::<String, String>::from_id(queue, &job.id)
+        let stored_job = Job::<String, String>::from_id(&queue, &job.id)
             .await?
             .unwrap();
 
@@ -96,7 +109,22 @@ mod job {
     }
     #[tokio_shared_rt::test]
     async fn set_and_get_progress_as_an_object() -> anyhow::Result<()> {
-        let queue = QUEUE.force().await;
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+        let prefix = "custom";
+        let queue = Queue::new(
+            "test_progress_as_an_object",
+            redis_opts,
+            QueueOptions {
+                prefix: Some(prefix),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         let job_opts = JobOptions::default();
         #[derive(Serialize)]
@@ -115,7 +143,7 @@ mod job {
             })
             .await;
 
-        let stored_job = Job::<String, String>::from_id(queue, &job.id)
+        let stored_job = Job::<String, String>::from_id(&queue, &job.id)
             .await?
             .unwrap();
 
@@ -128,11 +156,31 @@ mod job {
 
     #[tokio_shared_rt::test]
     async fn test_job_state() -> anyhow::Result<()> {
-        let queue = QUEUE.force().await;
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+        let prefix = "custom";
+        let queue = Queue::new(
+            "test_get_job_state",
+            redis_opts,
+            QueueOptions {
+                prefix: Some(prefix),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         let job_opts = JobOptions::default();
         let job: Job<String, String> = queue
-            .add("test_randw", "1".to_ascii_lowercase(), job_opts.clone(), None)
+            .add(
+                "test_randw",
+                "1".to_ascii_lowercase(),
+                job_opts.clone(),
+                None,
+            )
             .await?;
         let state = job.get_state().await?;
         assert_eq!(state, "waiting".to_owned());
@@ -142,7 +190,22 @@ mod job {
     #[tokio_shared_rt::test]
     async fn update_job_data() -> anyhow::Result<()> {
         use maplit::hashmap;
-        let queue = QUEUE.force().await;
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+        let prefix = "custom";
+        let queue = Queue::new(
+            "test_update_data",
+            redis_opts,
+            QueueOptions {
+                prefix: Some(prefix),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         let job_opts = JobOptions::default();
 
@@ -160,7 +223,7 @@ mod job {
         job.update_data(hashmap! {"baz".to_owned() => "qux".to_string()})
             .await?;
 
-        let stored_job = Job::<HashMap<String, String>, String>::from_id(queue, &job.id)
+        let stored_job = Job::<HashMap<String, String>, String>::from_id(&queue, &job.id)
             .await?
             .unwrap();
         assert_eq!(stored_job.data, job.data);
@@ -203,16 +266,16 @@ mod job {
         assert_eq!(stored_job, Some(job));
     }
 
-    #[tokio_shared_rt::test(shared=false)]
+    #[tokio_shared_rt::test(shared)]
     async fn promote_delayed_jobs() -> anyhow::Result<()> {
         use maplit::hashmap;
-         let mut config = HashMap::new();
+        let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
         config.insert("password", to_static_str(pass));
         let redis_opts = RedisOpts::Config(config);
 
-        let queue = Queue::new("test_copy_1", redis_opts, QueueOptions::default())
+        let queue = Queue::new("test_promote_jobs", redis_opts, QueueOptions::default())
             .await
             .unwrap();
         let job_opts = JobOptions {
@@ -239,11 +302,10 @@ mod job {
         assert!(!is_delayed_after_promote);
         // job is wating
         let result = job.is_waiting().await?;
-
-        //queue.obliterate(true).await?;
+        queue.obliterate(true).await?;
 
         assert!(result);
-    queue.remove_job(job.id, true).await?;
+        queue.remove_job(job.id, true).await?;
 
         Ok(())
     }

@@ -288,10 +288,7 @@ impl<
             .scripts
             .lock()
             .await
-            .is_job_in_list(
-                key.as_str(),
-                &self.id,
-            )
+            .is_job_in_list(key.as_str(), &self.id)
             .await?;
         Ok(result)
     }
