@@ -145,7 +145,7 @@ mod queue {
         queue.resume().await?;
         paused = queue.is_paused().await?;
         assert!(!paused);
-
+        queue.obliterate(false).await?;
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
@@ -173,7 +173,7 @@ mod queue {
         queue.resume().await?;
         paused = queue.is_paused().await?;
         assert!(!paused);
-
+        queue.obliterate(false).await?;
         Ok(())
     }
 
