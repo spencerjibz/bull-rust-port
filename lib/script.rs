@@ -3,6 +3,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::num::NonZero;
 
 use anyhow::Ok;
 use anyhow::Result;
@@ -104,6 +105,7 @@ impl Scripts {
             "getStateV2" => Script::new(&get_script("getStateV2-7.lua")),
             "updateData" => Script::new(&get_script("updateData-1.lua")),
             "getRanges" => Script::new(&get_script("getRanges-1.lua")),
+            "promote" => Script::new(&get_script("promote-8.lua")),
 
         };
         Self {
@@ -559,6 +561,47 @@ impl Scripts {
             None => Ok(None),
         }
     }
+
+    pub async fn promote(&self, job_id: &str) -> anyhow::Result<Option<i8>> {
+        let mut keys = self.get_keys(&[
+            "delayed",
+            "wait",
+            "paused",
+            "meta",
+            "prioritixed",
+            "pc",
+            "events",
+            "marker",
+        ]);
+
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("paused"));
+        keys.push(self.to_key("meta"));
+        let prefix = self.to_key("");
+
+        let mut conn = self.connection.get().await?;
+        let result: Option<i8> = self
+            .commands
+            .get("promote")
+            .unwrap()
+            .key(&keys)
+            .arg(prefix)
+            .arg(job_id)
+            //.arg(progress)
+            .invoke_async(&mut conn)
+            .await?;
+
+        match result {
+            Some(val) => {
+                if val >= 0 {
+                    return Ok(Some(val));
+                }
+                Err(finished_errors(val, job_id, "promote", "delayed"))
+            }
+            None => Ok(None),
+        }
+    }
     pub async fn move_to_completed<
         's,
         D: Serialize + Clone,
@@ -760,6 +803,33 @@ impl Scripts {
             .invoke_async(&mut conn)
             .await?;
         Ok(result)
+    }
+
+    pub async fn is_job_in_list(&self, list_key: &str, job_id: &str) -> anyhow::Result<bool> {
+        let mut result: Vec<String> = vec![];
+        let mut conn = self.connection.get().await?;
+        let version = self.redis_version.clone();
+
+        // use semver to compare the version of the redis server
+        // if the version is greater than 6.2.0 then use the getStateV2 script
+        if *version > *"6.0.6" {
+            let keys = [list_key];
+            result = self
+                .commands
+                .get("getState")
+                .unwrap()
+                .key(&keys)
+                .arg(job_id)
+                .invoke_async(&mut conn)
+                .await?;
+        } else {
+            let id: NonZero<usize> = job_id.parse()?;
+            result = redis::Cmd::lpop(list_key, Some(id))
+                .query_async(&mut conn)
+                .await?;
+        };
+
+        Ok(result.contains(&job_id.to_owned()))
     }
 
     pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {

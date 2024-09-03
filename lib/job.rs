@@ -1,10 +1,11 @@
 use super::*;
 
 use core::num;
+
 use futures::{self, lock::Mutex};
 use redis::Commands;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs};
-use serde::de::{value, Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+use serde::de::{value, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 use std::any::Any;
@@ -99,13 +100,39 @@ impl<
     pub fn is_completed(&self) -> bool {
         self.return_value.is_some() && self.finished_on > Some(0)
     }
-    async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
+    pub async fn get_state(&self) -> anyhow::Result<String> {
+        self.scripts.lock().await.get_state(&self.id).await
+    }
+    pub async fn remove(&self, remove_children: bool) -> anyhow::Result<()> {
+        self.scripts
+            .lock()
+            .await
+            .remove(self.id.clone(), remove_children)
+            .await
+    }
+
+    pub async fn update_progress<T: Serialize>(
+        &mut self,
+        progress: T,
+    ) -> anyhow::Result<Option<i8>> {
         self.progress = Some(serde_json::to_string(&progress)?);
         self.scripts
             .lock()
             .await
             .update_progress(&self.id, progress)
             .await
+    }
+
+    pub async fn update_data(&mut self, data: D) -> anyhow::Result<()> {
+        let result = self
+            .scripts
+            .lock()
+            .await
+            .update_data(&self.id, data.clone())
+            .await?;
+        self.data = data;
+
+        Ok(())
     }
 
     pub async fn new(
@@ -230,6 +257,45 @@ impl<
 
         Ok(job)
     }
+    pub async fn is_waiting(&self) -> anyhow::Result<bool> {
+        let result = self.is_in_in_list("wait").await? || self.is_in_in_list("paused").await?;
+
+        Ok(result)
+    }
+
+    pub async fn promote(&mut self) -> anyhow::Result<()> {
+        let result = self.scripts.lock().await.promote(&self.id).await?;
+        self.delay = 0;
+        Ok(())
+    }
+    pub async fn is_delayed(&self) -> anyhow::Result<bool> {
+        let mut conn = self.queue.manager.pool.get().await?;
+        let score: Option<isize> = conn
+            .zscore(self.scripts.lock().await.to_key("delayed"), &self.id)
+            .await?;
+        Ok(score.is_some())
+    }
+    pub async fn is_in_zset(&self, set: &str) -> anyhow::Result<bool> {
+        let mut conn = self.queue.manager.pool.get().await?;
+        let key = self.scripts.lock().await.to_key(set);
+        let score: Option<isize> = conn.zscore(&key, &self.id).await?;
+        Ok(score.is_some())
+    }
+
+    pub async fn is_in_in_list(&self, list_name: &str) -> anyhow::Result<bool> {
+        let key = self.scripts.lock().await.to_key(list_name);
+        let result = self
+            .scripts
+            .lock()
+            .await
+            .is_job_in_list(
+                key.as_str(),
+                &self.id,
+            )
+            .await?;
+        Ok(result)
+    }
+
     pub async fn from_id(queue: &Queue, job_id: &str) -> anyhow::Result<Option<Job<D, R>>> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
