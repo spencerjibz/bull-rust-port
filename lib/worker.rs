@@ -593,6 +593,7 @@ pub async fn process_job<
     let data = JobSetPair(job.clone(), token);
 
     let returned = callback(data).await; //.context("Error processing job ")?;
+    let mut emitter = emitter.lock().await;
 
     match returned {
         (res) => {
@@ -625,6 +626,7 @@ pub async fn process_job<
                     let id = job.id.clone();
 
                     let finished_job = end;
+                    println!("{:?} {}", &finished_job, &name);
 
                     return match finished_job {
                         MoveToFinishedResults::MoveToNext(data) => {
@@ -642,8 +644,6 @@ pub async fn process_job<
                         }
                         MoveToFinishedResults::Completed => {
                             emitter
-                                .lock()
-                                .await
                                 .emit("completed", (name, job.id.clone(), done))
                                 .await?;
                             jobs.lock().await.remove(&JobSetPair(job.clone(), token));
@@ -658,7 +658,7 @@ pub async fn process_job<
                 Ok(None)
             } else {
                 let e = res.err().unwrap();
-                emitter.lock().await.emit("error", e.to_string()).await;
+                emitter.emit("error", e.to_string()).await;
                 jobs.lock().await.remove(&JobSetPair(job.clone(), token));
 
                 Err(anyhow!("Error processing job"))
@@ -666,8 +666,6 @@ pub async fn process_job<
         }
         Err(e) => {
             emitter
-                .lock()
-                .await
                 .emit("error", (e.to_string(), job.name, job.id.clone()))
                 .await;
 
@@ -676,11 +674,7 @@ pub async fn process_job<
                 job.move_to_failed(e.to_string(), token, false).await?;
                 let name = job.name;
                 let id = job.id.clone();
-                emitter
-                    .lock()
-                    .await
-                    .emit("failed", (name, id, e.to_string()))
-                    .await;
+                emitter.emit("failed", (name, id, e.to_string())).await;
             }
             jobs.lock().await.remove(&JobSetPair(job.clone(), token));
             Err(anyhow!("Error processing job"))
