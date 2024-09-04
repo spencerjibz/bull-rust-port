@@ -166,6 +166,7 @@ pub struct WorkerOptions {
     pub remove_on_completion: RemoveOnCompletionOrFailure,
     #[serde(rename = "removeOnFail")]
     pub remove_on_fail: RemoveOnCompletionOrFailure,
+    pub auto_close: bool, // close worker once all jobs are done
 }
 
 #[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
@@ -213,6 +214,7 @@ impl Default for WorkerOptions {
             metrics: None,
             remove_on_completion: RemoveOnCompletionOrFailure::default(),
             remove_on_fail: RemoveOnCompletionOrFailure::default(),
+            auto_close: false,
         }
     }
 }

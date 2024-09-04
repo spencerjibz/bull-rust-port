@@ -226,11 +226,12 @@ where
     pub async fn close(&self, force: bool) {
         if force {
             self.force_closing.as_ref().swap(true);
+            // ignore
             self.cancel_processing().await;
         }
         self.closing.as_ref().swap(true);
         self.cancel_timers().await;
-        self.connection.close();
+        //self.connection.close();
         self.closed.swap(true);
     }
 
@@ -558,7 +559,6 @@ pub async fn get_completed<
 
     Ok(completed)
 }
-
 type PackedProcessArgs<D, R> = (
     Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
     Arc<Mutex<AsyncEventEmitter>>,         //emitter
@@ -777,6 +777,7 @@ async fn main_loop<D, R>(
             } else {
                 // progress event task;
                 tasks_completed.fetch_add(1);
+                dbg!(tasks_completed.load());
             }
         }
 

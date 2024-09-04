@@ -37,7 +37,6 @@ async fn main() -> anyhow::Result<()> {
     let worker_opts = WorkerOptions {
         autorun: false,
         concurrency: 1,
-
         ..Default::default()
     };
 
@@ -59,7 +58,6 @@ async fn main() -> anyhow::Result<()> {
     let job_count = 9;
     for _ in 0..job_count {
         let random_name = Uuid::new_v4().to_string();
-        let rand_id: u16 = random();
         queue
             .add::<JobDataType, String>(
                 to_static_str(random_name),
@@ -91,12 +89,11 @@ async fn main() -> anyhow::Result<()> {
     // tokio::time::sleep(Duration::from_secs(2)).await;
 
     loop {
-        //dbg!(count.load());
-
         if count.load() == job_count + 1 {
-            dbg!(count.load());
-            worker.close(true).await;
-            //queue.obliterate(true).await?;
+            // dbg!(worker.processing.lock().await.len());
+
+            worker.close(false).await;
+            queue.obliterate(true).await?;
 
             break;
         }

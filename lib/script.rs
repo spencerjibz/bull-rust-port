@@ -464,7 +464,7 @@ impl Scripts {
         }
         result
     }
-    fn raw_to_next_job_data(&self, raw: &Vec<Vec<String>>) -> NextJobData {
+    fn raw_to_next_job_data(&self, raw: &[Vec<String>]) -> NextJobData {
         let len = raw.len();
         if !raw.is_empty() {
             // check if the  first element is present in the array;
