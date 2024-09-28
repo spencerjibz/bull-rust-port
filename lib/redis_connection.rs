@@ -1,9 +1,9 @@
-use anyhow::Ok;
 pub use async_trait::async_trait;
 pub use deadpool_redis::{
     redis::{AsyncCommands, Client, RedisResult},
     Connection, Pool, Runtime,
 };
+use enums::BullError;
 use futures::prelude::*;
 
 use super::*;
@@ -24,7 +24,7 @@ pub enum RedisOpts {
 }
 
 impl RedisConnection {
-    pub async fn init(redis_options: RedisOpts) -> anyhow::Result<RedisConnection> {
+    pub async fn init(redis_options: RedisOpts) -> Result<RedisConnection, BullError> {
         use RedisOpts::*;
         match &redis_options {
             Url(s) => {
@@ -68,13 +68,13 @@ impl RedisConnection {
 
 #[async_trait]
 pub trait RedisConnectionTrait {
-    async fn disconnect(&self) -> anyhow::Result<()>;
-    async fn close(&self) -> anyhow::Result<()>;
+    async fn disconnect(&self) -> Result<(), BullError>;
+    async fn close(&self) -> Result<(), BullError>;
 }
 
 #[async_trait]
 impl RedisConnectionTrait for RedisConnection {
-    async fn disconnect(&self) -> anyhow::Result<()> {
+    async fn disconnect(&self) -> Result<(), BullError> {
         let mut conn = self.pool.get().await?;
         let _ = redis::cmd("CLIENT")
             .arg("KILL")
@@ -85,7 +85,7 @@ impl RedisConnectionTrait for RedisConnection {
 
         Ok(())
     }
-    async fn close(&self) -> anyhow::Result<()> {
+    async fn close(&self) -> Result<(), BullError> {
         let mut conn = self.pool.get().await?;
         let _ = redis::cmd("SHUTDOWN")
             .query_async::<_, ()>(&mut conn)
@@ -96,7 +96,7 @@ impl RedisConnectionTrait for RedisConnection {
 
 #[async_trait]
 impl RedisConnectionTrait for Pool {
-    async fn disconnect(&self) -> anyhow::Result<()> {
+    async fn disconnect(&self) -> Result<(), BullError> {
         let mut conn = self.get().await?;
         let _ = redis::cmd("CLIENT")
             .arg("KILL")
@@ -107,7 +107,7 @@ impl RedisConnectionTrait for Pool {
 
         Ok(())
     }
-    async fn close(&self) -> anyhow::Result<()> {
+    async fn close(&self) -> Result<(), BullError> {
         let mut conn = self.get().await?;
         let _ = redis::cmd("SHUTDOWN")
             .query_async::<_, ()>(&mut conn)

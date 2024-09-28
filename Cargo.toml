@@ -8,7 +8,7 @@ edition = "2021"
 name ='bull'
 path="lib/mod.rs"
 [dependencies]
-anyhow = "1.0.70"
+
 async-trait = "0.1.68"
 deadpool-redis = {version = "0.13.0",features = ["rt_tokio_1"]}
 derive-redis-json = "0.1.1"
@@ -27,11 +27,14 @@ dotenv = "0.15.0"
 async-recursion = "1.0.5"
 redis-derive = "0.1.7"
 redis-json = "0.0.1-beta-1"
-console-subscriber = "0.2.0"
 async-atomic = "0.1.4"
 num_cpus = "1.16.0"
 rmp = "0.8.14"
 rmp-serde = "1.3.0"
+thiserror = "1.0.63"
+backtrace = "0.3.74"
+async-backtrace = "0.2.7"
+derive_more = { version = "1.0.0", features = ["display"] }
 
 
 # standard crate data is left out

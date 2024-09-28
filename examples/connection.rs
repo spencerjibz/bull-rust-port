@@ -1,11 +1,12 @@
 use bull::*;
+use enums::BullError;
 
 use std::collections::HashMap;
 
 use tokio::time::Instant;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), BullError> {
     let n = Instant::now();
     let pass = fetch_redis_pass();
     let mut config = HashMap::new();
@@ -25,16 +26,19 @@ async fn main() -> anyhow::Result<()> {
     println!("{:#?}", job_parsing_time.elapsed());
     println!("{:#?}", job);
     use chrono::{DateTime, NaiveDateTime, Utc};
-    let (finished_on, processed_on, date) = (job.finished_on, job.processed_on, job.timestamp);
-    let finished_on = NaiveDateTime::from_timestamp_millis(finished_on).unwrap();
-    let processed_on = NaiveDateTime::from_timestamp_millis(processed_on).unwrap();
-    let date = NaiveDateTime::from_timestamp_millis(date);
-    println!("finished_on: {:#?}", finished_on);
-    println!("processed_on: {:#?}", processed_on);
-    let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(date.unwrap(), Utc);
-    // Format the datetime how you want
-    let newdate = datetime.format("%Y-%m-%d %H:%M:%S");
-    println!("date: {}", newdate);
+    if let (Some(finished_on), Some(processed_on), date) =
+        (job.finished_on, job.processed_on, job.timestamp)
+    {
+        let finished_on = NaiveDateTime::from_timestamp_millis(finished_on as i64).unwrap();
+        let processed_on = NaiveDateTime::from_timestamp_millis(processed_on as i64).unwrap();
+        let date = NaiveDateTime::from_timestamp_millis(date);
+        println!("finished_on: {:#?}", finished_on);
+        println!("processed_on: {:#?}", processed_on);
+        let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(date.unwrap(), Utc);
+        // Format the datetime how you want
+        let newdate = datetime.format("%Y-%m-%d %H:%M:%S");
+        println!("date: {}", newdate);
+    }
     println!("{:?}", n.elapsed());
     Ok(())
 }

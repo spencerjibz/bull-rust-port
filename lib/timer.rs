@@ -50,13 +50,10 @@ impl Timer {
     }
 
     pub fn stop(&mut self) {
-        match &self.task {
-            Some(task) => {
-                self._ok = false;
-                task.abort();
-                self.task = None;
-            }
-            None => {} //  self._task.abort();
+        if let Some(task) = &self.task {
+            self._ok = false;
+            task.abort();
+            self.task = None;
         }
     }
 }

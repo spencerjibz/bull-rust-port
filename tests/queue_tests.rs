@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod queue {
 
-    use anyhow::Ok;
     use async_lazy::Lazy;
     use bull::*;
+    use enums::BullError;
 
     use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ mod queue {
     });
 
     #[tokio_shared_rt::test(shared)]
-    async fn add_job_to_queue() -> anyhow::Result<()> {
+    async fn add_job_to_queue() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -36,7 +36,10 @@ mod queue {
             user_id: "123".to_owned(),
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
-        let job_opts = JobOptions::default();
+        let job_opts = JobOptions {
+            job_id: Some("23".to_owned()),
+            ..Default::default()
+        };
         let id = job_opts.job_id.clone().unwrap();
 
         let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
@@ -47,7 +50,7 @@ mod queue {
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
-    async fn add_job_to_queue_with_options() -> anyhow::Result<()> {
+    async fn add_job_to_queue_with_options() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -58,7 +61,10 @@ mod queue {
             user_id: "123".to_owned(),
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
-        let mut job_opts = JobOptions::default();
+        let mut job_opts = JobOptions {
+            job_id: Some("23".to_owned()),
+            ..Default::default()
+        };
         let id = job_opts.job_id.clone().unwrap();
 
         job_opts.attempts = 3;
@@ -79,7 +85,7 @@ mod queue {
 
     #[tokio_shared_rt::test(shared)]
 
-    async fn remove_job_from_queue() -> anyhow::Result<()> {
+    async fn remove_job_from_queue() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -90,7 +96,10 @@ mod queue {
             user_id: "123".to_owned(),
             tracking_id: "fadfasfdsaf".to_ascii_lowercase(),
         };
-        let job_opts = JobOptions::default();
+        let job_opts = JobOptions {
+            job_id: Some("23".to_owned()),
+            ..Default::default()
+        };
         let id = job_opts.job_id.clone().unwrap();
 
         let job: Job<Data, String> = queue.add("test", data, job_opts, None).await?;
@@ -103,7 +112,7 @@ mod queue {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn get_job_state() -> anyhow::Result<()> {
+    async fn get_job_state() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -120,14 +129,14 @@ mod queue {
         let state = queue.get_job_state(&job.id).await?;
 
         assert_eq!(state, "waiting".to_string());
-        queue.obliterate(true).await;
+        let _ = queue.obliterate(true).await;
 
         Ok(())
     }
 
     #[tokio_shared_rt::test(shared)]
 
-    async fn is_paused() -> anyhow::Result<()> {
+    async fn is_paused() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
         queue.pause().await?;
         let mut paused: bool = queue.is_paused().await?;
@@ -136,12 +145,40 @@ mod queue {
         queue.resume().await?;
         paused = queue.is_paused().await?;
         assert!(!paused);
+        queue.obliterate(false).await?;
+        Ok(())
+    }
+    #[tokio_shared_rt::test(shared)]
+    async fn is_paused_with_custom_prefix() -> Result<(), BullError> {
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
 
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+
+        let queue = Queue::new(
+            "test",
+            redis_opts,
+            QueueOptions {
+                prefix: Some("custom"),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        queue.pause().await?;
+        let mut paused: bool = queue.is_paused().await?;
+        assert!(paused);
+
+        queue.resume().await?;
+        paused = queue.is_paused().await?;
+        assert!(!paused);
+        queue.obliterate(false).await?;
         Ok(())
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn trim_events_manually() -> anyhow::Result<()> {
+    async fn trim_events_manually() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -168,9 +205,73 @@ mod queue {
             .query_async(&mut conn)
             .await?;
         println!("events_length: {}", events_length);
-        assert_eq!(events_length, 4);
+        assert_eq!(events_length, 6);
         //let count = queue.trim_events(4).await?;
         queue.obliterate(true).await?;
+
+        Ok(())
+    }
+
+    #[tokio_shared_rt::test(shared)]
+    async fn trim_events_manually_with_custom_prefix() -> Result<(), BullError> {
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+        let prefix = "custom";
+        let queue = Queue::new(
+            "test_copy",
+            redis_opts,
+            QueueOptions {
+                prefix: Some(prefix),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut conn = queue.manager.pool.get().await?;
+        let job_opts = JobOptions::default();
+        // add multiple jobs
+        let _job1: Job<(), ()> = queue.add("test", (), job_opts.clone(), None).await?;
+        let _job2: Job<(), ()> = queue.add("test", (), job_opts.clone(), None).await?;
+        let _job3: Job<(), ()> = queue.add("test", (), job_opts, None).await?;
+        let events_length: isize = redis::cmd("XLEN")
+            .arg(format!("{prefix}:test_copy:events"))
+            .query_async(&mut conn)
+            .await?;
+        println!("events_length: {}", events_length);
+        assert_eq!(events_length, 6);
+        //let count = queue.trim_events(4).await?;
+        queue.obliterate(true).await?;
+
+        Ok(())
+    }
+    #[tokio_shared_rt::test(shared)]
+    async fn test_get_jobs() -> Result<(), BullError> {
+        let mut config = HashMap::new();
+        let pass = fetch_redis_pass();
+
+        config.insert("password", to_static_str(pass));
+        let redis_opts = RedisOpts::Config(config);
+
+        let queue = Queue::new("test_get_job", redis_opts, QueueOptions::default())
+            .await
+            .unwrap();
+
+        let job_opts = JobOptions::default();
+        let job1: Job<String, String> = queue
+            .add("test", "1".to_ascii_lowercase(), job_opts.clone(), None)
+            .await?;
+        let job2: Job<String, String> = queue
+            .add("test2", "2".to_ascii_lowercase(), job_opts.clone(), None)
+            .await?;
+
+        let jobs = queue.get_jobs(&["wait"], None, false).await?;
+        assert_eq!(job1.id, jobs[0].id);
+        assert_eq!(job2.id, jobs[1].id);
+
+        queue.obliterate(false).await?;
 
         Ok(())
     }

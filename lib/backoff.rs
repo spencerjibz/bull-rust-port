@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
-use anyhow::Ok;
 
 use crate::*;
 

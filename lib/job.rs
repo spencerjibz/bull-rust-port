@@ -1,10 +1,12 @@
 use super::*;
 
 use core::num;
+
+use enums::BullError;
 use futures::{self, lock::Mutex};
 use redis::Commands;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs};
-use serde::de::{value, Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+use serde::de::{value, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 use std::any::Any;
@@ -19,9 +21,9 @@ pub struct Job<D, R> {
     pub timestamp: i64,
     pub attempts_made: i64,
     pub attempts: i64,
-    pub delay: i64,
-    pub id: String,       // jsonString
-    pub progress: String, // 0 to 100
+    pub delay: u64,
+    pub id: String,               // jsonString
+    pub progress: Option<String>, // 0 to 100
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
@@ -31,14 +33,15 @@ pub struct Job<D, R> {
     pub stack_trace: Vec<String>,
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
-    pub processed_on: i64,
-    pub finished_on: i64,
+    pub processed_on: Option<u64>,
+    pub finished_on: Option<u64>,
     pub discarded: bool,
     pub parent_key: Option<String>,
     pub with_children_key: Option<String>,
     pub parent: Option<Parent>,
     pub token: &'static str,
     pub remove_deps_on_failure: bool,
+    pub priority: i64,
 }
 
 impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
@@ -96,15 +99,41 @@ impl<
     > Job<D, R>
 {
     pub fn is_completed(&self) -> bool {
-        self.return_value.is_some() && self.finished_on > 0
+        self.return_value.is_some() && self.finished_on > Some(0)
     }
-    async fn update_progress<T: Serialize>(&mut self, progress: T) -> anyhow::Result<Option<i8>> {
-        self.progress = serde_json::to_string(&progress)?;
+    pub async fn get_state(&self) -> Result<String, BullError> {
+        self.scripts.lock().await.get_state(&self.id).await
+    }
+    pub async fn remove(&self, remove_children: bool) -> Result<(), BullError> {
+        self.scripts
+            .lock()
+            .await
+            .remove(self.id.clone(), remove_children)
+            .await
+    }
+
+    pub async fn update_progress<T: Serialize>(
+        &mut self,
+        progress: T,
+    ) -> Result<Option<i8>, BullError> {
+        self.progress = Some(serde_json::to_string(&progress)?);
         self.scripts
             .lock()
             .await
             .update_progress(&self.id, progress)
             .await
+    }
+
+    pub async fn update_data(&mut self, data: D) -> Result<(), BullError> {
+        let result = self
+            .scripts
+            .lock()
+            .await
+            .update_data(&self.id, data.clone())
+            .await?;
+        self.data = data;
+
+        Ok(())
     }
 
     pub async fn new(
@@ -114,7 +143,7 @@ impl<
 
         opts: JobOptions,
         job_id: Option<String>,
-    ) -> anyhow::Result<Job<D, R>> {
+    ) -> Result<Job<D, R>, BullError> {
         let prefix = &queue.prefix;
         let queue_name = &queue.name;
         let dup_conn = queue.manager.pool.clone();
@@ -127,7 +156,7 @@ impl<
         let id = if let Some(id) = job_id {
             id
         } else {
-            opts.job_id.unwrap()
+            opts.job_id.unwrap_or_default()
         };
         let que = queue.clone();
 
@@ -136,16 +165,16 @@ impl<
             queue: Arc::new(que),
             name: to_static_str(name.to_string()),
             id,
-            progress: String::new(),
+            progress: None,
             timestamp: opts.timestamp.unwrap(),
-            delay: opts.delay,
+            delay: opts.delay as u64,
             attempts_made: 0,
             attempts: opts.attempts,
             data,
             return_value: None,
             remove_on_complete: opts.remove_on_complete,
-            processed_on: 0,
-            finished_on: 0,
+            processed_on: None,
+            finished_on: None,
             repeat_job_key: None,
             failed_reason: None,
             stack_trace: vec![],
@@ -161,13 +190,14 @@ impl<
             parent,
             token: "",
             remove_deps_on_failure: false,
+            priority: 0,
         })
     }
     pub async fn from_map(
         mut queue: &Queue,
         map: HashMap<String, String>,
         job_id: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, BullError> {
         let mut obj = JobJsonRaw::from_map(map)?;
         Self::from_raw_job(&mut obj, queue, job_id).await
     }
@@ -175,11 +205,11 @@ impl<
         mut queue: &Queue,
         raw_string: String,
         job_id: &str,
-    ) -> anyhow::Result<Job<D, R>> {
+    ) -> Result<Job<D, R>, BullError> {
         let mut json = JobJsonRaw::fromStr(raw_string)?;
         Self::from_raw_job(&mut json, queue, job_id).await
     }
-    pub fn opts_from_json(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
+    pub fn opts_from_json(&mut self, raw_opts: String) -> Result<JobOptions, BullError> {
         let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
         Ok(opts)
     }
@@ -187,7 +217,7 @@ impl<
         json: &mut JobJsonRaw,
         queue: &Queue,
         job_id: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, BullError> {
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
 
@@ -196,26 +226,19 @@ impl<
 
         let mut job = Self::new(name, queue, data, opts, None).await?;
         job.id = job_id.to_string();
-        job.progress = json.progress.to_string();
-        job.attempts_made = json.attempts_made.parse().unwrap_or_default();
-        job.timestamp = json.timestamp.parse().unwrap_or_default();
-        job.delay = json.delay.parse().unwrap_or_default();
-        if !json.return_value.is_empty() {
-            let data = to_static_str(json.return_value.to_string());
+        job.progress = json.progress.map(|v| v.to_owned());
+        job.attempts_made = json.attempts_made.unwrap_or_default();
+        job.timestamp = json.timestamp.unwrap_or_default() as i64;
+        job.delay = json.delay.unwrap_or_default();
+        if let Some(returned) = json.return_value {
+            let data = to_static_str(returned.to_string());
             let return_value = serde_json::from_str::<R>(data)?;
             job.return_value = Some(return_value);
         }
-        job.finished_on = json
-            .finished_on
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default();
-        job.processed_on = json
-            .processed_on
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default();
-        job.failed_reason = Some(json.failed_reason.to_string());
+        job.finished_on = json.finished_on;
+        job.processed_on = json.processed_on;
+        job.failed_reason = json.failed_reason.map(|v| v.to_owned());
+        job.priority = json.priority.unwrap_or_default();
 
         job.repeat_job_key = json.rjk;
 
@@ -235,7 +258,43 @@ impl<
 
         Ok(job)
     }
-    pub async fn from_id(queue: &Queue, job_id: &str) -> anyhow::Result<Option<Job<D, R>>> {
+    pub async fn is_waiting(&self) -> Result<bool, BullError> {
+        let result = self.is_in_in_list("wait").await? || self.is_in_in_list("paused").await?;
+
+        Ok(result)
+    }
+
+    pub async fn promote(&mut self) -> Result<(), BullError> {
+        let result = self.scripts.lock().await.promote(&self.id).await?;
+        self.delay = 0;
+        Ok(())
+    }
+    pub async fn is_delayed(&self) -> Result<bool, BullError> {
+        let mut conn = self.queue.manager.pool.get().await?;
+        let score: Option<isize> = conn
+            .zscore(self.scripts.lock().await.to_key("delayed"), &self.id)
+            .await?;
+        Ok(score.is_some())
+    }
+    pub async fn is_in_zset(&self, set: &str) -> Result<bool, BullError> {
+        let mut conn = self.queue.manager.pool.get().await?;
+        let key = self.scripts.lock().await.to_key(set);
+        let score: Option<isize> = conn.zscore(&key, &self.id).await?;
+        Ok(score.is_some())
+    }
+
+    pub async fn is_in_in_list(&self, list_name: &str) -> Result<bool, BullError> {
+        let key = self.scripts.lock().await.to_key(list_name);
+        let result = self
+            .scripts
+            .lock()
+            .await
+            .is_job_in_list(key.as_str(), &self.id)
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn from_id(queue: &Queue, job_id: &str) -> Result<Option<Job<D, R>>, BullError> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
         let mut conn = queue.manager.pool.clone().get().await?;
@@ -257,7 +316,7 @@ impl<
         err: String,
         token: &str,
         fetch_next: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), BullError> {
         self.failed_reason = Some(err.clone());
         let mut move_to_failed = false;
 
@@ -342,17 +401,40 @@ impl<
             finished_on = generate_timestamp()?;
         }
         if finished_on > 0 {
-            self.finished_on = finished_on as i64;
+            self.finished_on = Some(finished_on);
         }
 
         Ok(())
+    }
+
+    pub async fn add_log(
+        &self,
+        job_id: &str,
+        log_row: &str,
+        keep_logs: Option<isize>,
+    ) -> Result<isize, BullError> {
+        let scripts = self.scripts.lock().await;
+        let key = scripts.to_key(format!("{job_id}:logs").as_str());
+        let mut connection = scripts.connection.get().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.rpush(&key, log_row);
+
+        if let Some(log_count) = keep_logs {
+            pipeline.ltrim(&key, -log_count, -1);
+        }
+
+        let result: Vec<isize> = pipeline.query_async(&mut connection).await?;
+        if let Some(count) = keep_logs {
+            return Ok(std::cmp::min(count, result[0]));
+        }
+        Ok(result[0])
     }
 
     pub async fn save_to_stacktrace(
         &mut self,
         conn: &mut Connection,
         err_stack: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), BullError> {
         if !err_stack.is_empty() {
             self.stack_trace.push(err_stack.clone());
             if let Some(limit) = self.opts.stacktrace_limit {
@@ -381,12 +463,12 @@ impl<
         Ok(())
     }
 
-    pub fn to_string(&self) -> anyhow::Result<String> {
+    pub fn to_string(&self) -> Result<String, BullError> {
         let string = serde_json::to_string(&self)?;
         Ok(string)
     }
-    pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
-        let mut file = std::fs::File::create(path)?;
+    pub fn save_to_file(&self, path: &str) -> Result<(), BullError> {
+        let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
 
         Ok(())

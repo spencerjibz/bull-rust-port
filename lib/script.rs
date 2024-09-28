@@ -3,9 +3,8 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::num::NonZero;
 
-use anyhow::Ok;
-use anyhow::Result;
 use derive_redis_json::RedisJsonValue;
 
 use maplit::hashmap;
@@ -15,8 +14,10 @@ use redis_derive::FromRedisValue;
 use rmp::encode;
 use serde::{Deserialize, Serialize};
 
+use crate::enums::BullError;
 //use crate::move_to_finished::{self, move_job_to_finished};
-use crate::enums::ErrorCode::{self, *};
+use crate::enums;
+use crate::enums::JobError;
 use crate::redis_connection::*;
 use crate::worker::map_from_vec;
 use crate::Parent;
@@ -102,6 +103,10 @@ impl Scripts {
             "remove" => Script::new(&get_script("removeJob-1.lua")),
             "getState" => Script::new(&get_script("getState-7.lua")),
             "getStateV2" => Script::new(&get_script("getStateV2-7.lua")),
+            "updateData" => Script::new(&get_script("updateData-1.lua")),
+            "getRanges" => Script::new(&get_script("getRanges-1.lua")),
+            "promote" => Script::new(&get_script("promote-8.lua")),
+            "saveStacktrace" => Script::new(&get_script("saveStacktrace-1.lua"))
 
         };
         Self {
@@ -135,7 +140,7 @@ impl Scripts {
         job_id: &str,
         lifo: bool,
         token: &str,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         let mut keys = self.get_keys(&["active", "wait", "paused"]);
         keys.push(self.to_key(job_id));
         keys.push(self.to_key("meta"));
@@ -155,9 +160,9 @@ impl Scripts {
         Ok((keys, args))
     }
     pub async fn add_job<'s, D: Serialize + Clone + Deserialize<'s>, R: FromRedisValue>(
-        &mut self,
+        &self,
         job: &Job<D, R>,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> Result<Option<i64>, BullError> {
         let e = job.queue.prefix.to_owned();
         let prefix = self.to_key("");
         let name = job.name;
@@ -181,11 +186,9 @@ impl Scripts {
         ]);
 
         let mut conn = self.connection.get().await?;
-        // get the redis_version here;
-        let version = get_server_version(&mut conn).await?;
-        self.redis_version = version;
 
         let mut args = Arguments::default();
+
         args.custom_id = Some(job.id.clone());
 
         args.key_prefix = prefix.to_string();
@@ -216,7 +219,7 @@ impl Scripts {
             .await?;
         Ok(result)
     }
-    pub async fn pause<R: FromRedisValue>(&mut self, pause: bool) -> anyhow::Result<R> {
+    pub async fn pause(&self, pause: bool) -> Result<(), BullError> {
         let src = if pause { "wait" } else { "paused" };
         let dst = if pause { "paused" } else { "wait" };
         let keys = self.get_keys(&[src, dst, "meta", "events"]);
@@ -226,22 +229,21 @@ impl Scripts {
             "resumed".as_bytes()
         };
         let mut conn = self.connection.get().await?;
-        let result = self
-            .commands
+        self.commands
             .get("pause")
             .unwrap()
             .key(keys)
             .arg(f_ags)
             .invoke_async(&mut conn)
             .await?;
-        Ok(result)
+        Ok(())
     }
-    pub async fn retry_jobs<R: FromRedisValue>(
-        &mut self,
+    pub async fn retry_jobs(
+        &self,
         state: String,
         count: i64,
         timestamp: i64,
-    ) -> anyhow::Result<R> {
+    ) -> Result<i8, BullError> {
         let current = if !state.is_empty() {
             state
         } else {
@@ -253,11 +255,11 @@ impl Scripts {
         } else {
             (timestamp * 1000)
         };
-        let keys = self.get_keys(&["", &current, "wait", "paused", "meta"]);
+        let keys = self.get_keys(&["", "events", &current, "wait", "paused", "meta"]);
         let mut conn = self.connection.get().await?;
         let result = self
             .commands
-            .get("retry_jobs")
+            .get("retryJobs")
             .unwrap()
             .key(keys)
             .arg(count)
@@ -267,7 +269,8 @@ impl Scripts {
             .await?;
         Ok(result)
     }
-    pub async fn obliterate(&mut self, count: i64, force: bool) -> anyhow::Result<i64> {
+    pub async fn obliterate(&self, count: i64, force: bool) -> Result<i64, BullError> {
+        use crate::enums::QueueError;
         let count = if count > 0 { count } else { 1000 };
         let mut connection = self.connection.get().await?;
         let keys = self.get_keys(&["meta", ""]);
@@ -281,19 +284,19 @@ impl Scripts {
             .await?;
 
         if result == -1 {
-            panic!("Cannot obliterate non-paused queue")
+            return Err(QueueError::FailedToObliterate.into());
         } else if result == -2 {
-            panic!("cannot obliterate queue with active jobs")
+            return Err(QueueError::CantObliterateWhileJobsActive.into());
         }
         Ok(result)
     }
 
     pub async fn move_to_active(
-        &mut self,
+        &self,
         token: &str,
         opts: &WorkerOptions,
         job_id: Option<String>,
-    ) -> anyhow::Result<MoveToAciveResult> {
+    ) -> Result<MoveToAciveResult, BullError> {
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
         let lock_duration = opts.lock_duration;
@@ -321,7 +324,7 @@ impl Scripts {
             limiter: Some(limiter),
         };
 
-        let mut connection = &mut self.connection.get().await?;
+        let mut connection = self.connection.get().await?;
         let packed_opts = rmp_serde::encode::to_vec_named(&move_opts)?;
 
         let result: MoveToAciveResults = self
@@ -333,7 +336,7 @@ impl Scripts {
             .arg(timestamp)
             .arg(job_id)
             .arg(packed_opts)
-            .invoke_async(connection)
+            .invoke_async(&mut connection)
             .await?;
 
         Ok(result.into())
@@ -344,7 +347,7 @@ impl Scripts {
         D: Serialize + Clone,
         R: FromRedisValue + Any + Send + Sync + Clone + 'static,
     >(
-        &mut self,
+        &self,
         job: &mut Job<D, R>,
         val: String,
         prop_val: &str,
@@ -353,7 +356,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
@@ -396,7 +399,7 @@ impl Scripts {
         let d = &self.to_key("");
         let mut sec_last = self.to_key("");
 
-        let mut connection = &mut self.connection.get().await?;
+        let mut connection = self.connection.get().await?;
 
         let packed_opts = rmp_serde::encode::to_vec_named(&move_to_finished_opts)?;
         let result: MoveToFinishedResults = self
@@ -413,7 +416,7 @@ impl Scripts {
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
-            .invoke_async(connection)
+            .invoke_async(&mut connection)
             .await?;
 
         if let MoveToFinishedResults::Error(code) = result {
@@ -461,7 +464,7 @@ impl Scripts {
         }
         result
     }
-    fn raw_to_next_job_data(&self, mut raw: &Vec<Vec<String>>) -> NextJobData {
+    fn raw_to_next_job_data(&self, raw: &[Vec<String>]) -> NextJobData {
         let len = raw.len();
         if !raw.is_empty() {
             // check if the  first element is present in the array;
@@ -477,14 +480,14 @@ impl Scripts {
     }
 
     pub async fn extend_lock(
-        &mut self,
+        &self,
         job_id: &str,
         token: &str,
         duration: i64,
-    ) -> anyhow::Result<u64> {
+    ) -> Result<u64, BullError> {
         let stalled = self.to_key("stalled");
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
-        let conn = &mut self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let result: u64 = self
             .commands
             .get("extendLock")
@@ -493,15 +496,15 @@ impl Scripts {
             .arg(token)
             .arg(duration.to_string())
             .arg(job_id)
-            .invoke_async(conn)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
     pub async fn move_stalled_jobs_to_wait(
-        &mut self,
+        &self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         let prefix = self.to_key("");
         let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
@@ -514,7 +517,7 @@ impl Scripts {
             "paused",
             "events",
         ]);
-        let conn = &mut self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("moveStalledJobsToWait")
@@ -524,20 +527,20 @@ impl Scripts {
             .arg(prefix)
             .arg(timestamp)
             .arg(stalled_interval)
-            .invoke_async(conn)
+            .invoke_async(&mut conn)
             .await?;
 
         Ok(result)
     }
     pub async fn update_progress<P: Serialize>(
-        &mut self,
+        &self,
         job_id: &str,
         progress: P,
-    ) -> anyhow::Result<Option<i8>> {
+    ) -> Result<Option<i8>, BullError> {
         let keys = [self.to_key(job_id), self.to_key("events")];
 
         let progress = serde_json::to_string(&progress)?;
-        let conn = &mut self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let result: Option<i8> = self
             .commands
             .get("updateProgress")
@@ -545,7 +548,7 @@ impl Scripts {
             .key(&keys)
             .arg(job_id)
             .arg(progress)
-            .invoke_async(conn)
+            .invoke_async(&mut conn)
             .await?;
 
         match result {
@@ -558,19 +561,60 @@ impl Scripts {
             None => Ok(None),
         }
     }
+
+    pub async fn promote(&self, job_id: &str) -> Result<Option<i8>, BullError> {
+        let mut keys = self.get_keys(&[
+            "delayed",
+            "wait",
+            "paused",
+            "meta",
+            "prioritixed",
+            "pc",
+            "events",
+            "marker",
+        ]);
+
+        keys.push(self.to_key(job_id));
+        keys.push(self.to_key("events"));
+        keys.push(self.to_key("paused"));
+        keys.push(self.to_key("meta"));
+        let prefix = self.to_key("");
+
+        let mut conn = self.connection.get().await?;
+        let result: Option<i8> = self
+            .commands
+            .get("promote")
+            .unwrap()
+            .key(&keys)
+            .arg(prefix)
+            .arg(job_id)
+            //.arg(progress)
+            .invoke_async(&mut conn)
+            .await?;
+
+        match result {
+            Some(val) => {
+                if val >= 0 {
+                    return Ok(Some(val));
+                }
+                Err(finished_errors(val, job_id, "promote", "delayed"))
+            }
+            None => Ok(None),
+        }
+    }
     pub async fn move_to_completed<
         's,
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
     >(
-        &mut self,
+        &self,
         job: &mut Job<D, R>,
         val: String,
         remove_on_complete: RemoveOnCompletionOrFailure,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         self.move_to_finished(
             job,
             val,
@@ -587,14 +631,14 @@ impl Scripts {
         D: Serialize + Clone,
         R: FromRedisValue + Any + Send + Sync + 'static + Clone,
     >(
-        &mut self,
+        &self,
         job: &mut Job<D, R>,
         failed_reason: String,
         remove_on_failure: RemoveOnCompletionOrFailure,
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -608,9 +652,12 @@ impl Scripts {
         .await
     }
 
-    pub async fn get_counts(&mut self, mut types: impl Iterator<Item = &str>) -> Result<Vec<i64>> {
+    pub async fn get_counts(
+        &self,
+        mut types: impl Iterator<Item = &str>,
+    ) -> Result<Vec<i64>, BullError> {
         let keys = self.get_keys(&[""]);
-        let conn = &mut self.connection.get().await?;
+        let mut conn = self.connection.get().await?;
         let transformed_types: Vec<_> = types
             .map(|t| if t == "waiting" { "wait" } else { t })
             .collect();
@@ -620,17 +667,69 @@ impl Scripts {
             .unwrap()
             .key(keys)
             .arg(transformed_types)
-            .invoke_async(conn)
+            .invoke_async(&mut conn)
             .await?;
         Ok(result)
     }
+    pub async fn get_ranges(
+        &self,
+        types: &[&str],
+        start: isize,
+        end: isize,
+        asc: bool,
+    ) -> Result<Vec<Vec<String>>, BullError> {
+        use maplit::hashmap;
+        let mut commands = vec![];
+        let switcher = hashmap! {"completed" => "zrange",
+           "delayed" => "zrange",
+           "failed" => "zrange",
+           "priority" => "zrange",
+           "repeat" => "zrange",
+           "waiting-children" => "zrange",
+           "active" => "lrange",
+           "paused" => "lrange",
+           "wait" => "lrange"
+        };
+        let mut transformed_types = vec![];
+        types.iter().for_each(|ty| {
+            let transformed_type = if ty == &"waiting" { "wait" } else { ty };
+            transformed_types.push(transformed_type);
+            if let Some(value) = switcher.get(transformed_type) {
+                commands.push(*value);
+            }
+        });
+        let asc_bool = if asc { "1" } else { "0" };
 
+        let prefix = self.get_keys(&[""]);
+        let mut conn = self.connection.get().await?;
+        let mut responses: Vec<Vec<String>> = self
+            .commands
+            .get("getRanges")
+            .unwrap()
+            .key(prefix)
+            .arg(start)
+            .arg(end)
+            .arg(asc_bool)
+            .arg(transformed_types)
+            .invoke_async(&mut conn)
+            .await?;
+
+        responses.iter_mut().enumerate().for_each(|(idx, list)| {
+            if let Some(value) = commands.get(idx) {
+                if asc && value == &"lrange" {
+                    list.reverse();
+                }
+            }
+        });
+
+        Ok(responses)
+    }
     pub fn move_to_delayed_args(
         &self,
         job_id: &str,
         timestamp: i64,
         token: &str,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         use std::cmp::max;
         let mut max_timestamp = max(0, timestamp);
         let int = job_id.parse::<i64>()?;
@@ -654,11 +753,27 @@ impl Scripts {
         ];
         Ok((keys, args))
     }
+    pub async fn update_data<D: Serialize + Clone>(
+        &self,
+        job_id: &str,
+        data: D,
+    ) -> Result<i64, BullError> {
+        let keys = [self.to_key(job_id)];
+        let json_data = serde_json::to_string(&data)?;
+        let mut con = self.connection.get().await?;
+        let result = self
+            .commands
+            .get("updateData")
+            .unwrap()
+            .key(&keys)
+            .arg(json_data)
+            .invoke_async(&mut con)
+            .await?;
 
-    pub fn move_to_failed_args() -> anyhow::Result<(Vec<String>, Vec<String>)> {
-        unimplemented!()
+        Ok(result)
     }
-    pub async fn get_state(&self, job_id: &str) -> anyhow::Result<String> {
+
+    pub async fn get_state(&self, job_id: &str) -> Result<String, BullError> {
         let keys = self.get_keys(&[
             "completed",
             "failed",
@@ -693,7 +808,34 @@ impl Scripts {
         Ok(result)
     }
 
-    pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
+    pub async fn is_job_in_list(&self, list_key: &str, job_id: &str) -> Result<bool, BullError> {
+        let mut result: Vec<String> = vec![];
+        let mut conn = self.connection.get().await?;
+        let version = self.redis_version.clone();
+
+        // use semver to compare the version of the redis server
+        // if the version is greater than 6.2.0 then use the getStateV2 script
+        if *version > *"6.0.6" {
+            let keys = [list_key];
+            result = self
+                .commands
+                .get("getState")
+                .unwrap()
+                .key(&keys)
+                .arg(job_id)
+                .invoke_async(&mut conn)
+                .await?;
+        } else {
+            let id: NonZero<usize> = job_id.parse()?;
+            result = redis::Cmd::lpop(list_key, Some(id))
+                .query_async(&mut conn)
+                .await?;
+        };
+
+        Ok(result.contains(&job_id.to_owned()))
+    }
+
+    pub async fn remove(&self, job_id: String, remove_children: bool) -> Result<(), BullError> {
         let prefix = self.to_key("");
 
         //mutate the first value in the keys array
@@ -840,7 +982,7 @@ fn test_get_script() {
     assert!(!script.is_empty());
 }
 
-pub fn generate_timestamp() -> anyhow::Result<u64> {
+pub fn generate_timestamp() -> Result<u64, BullError> {
     use std::time::SystemTime;
     let result = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -850,7 +992,7 @@ pub fn generate_timestamp() -> anyhow::Result<u64> {
 }
 
 // write a function that return the version of the redis server
-pub async fn get_server_version(conn: &mut Connection) -> anyhow::Result<String> {
+pub async fn get_server_version(conn: &mut Connection) -> Result<String, BullError> {
     let result: String = redis::cmd("INFO").arg("server").query_async(conn).await?;
     for line in result.lines() {
         if line.starts_with("redis_version") {
@@ -861,30 +1003,18 @@ pub async fn get_server_version(conn: &mut Connection) -> anyhow::Result<String>
     Ok("".to_string())
 }
 
-pub fn finished_errors(num: i8, job_id: &str, command: &str, state: &str) -> anyhow::Error {
-    let code = ErrorCode::try_from(num).unwrap();
-    match code {
-        code_job_not_exist => {
-            anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
-        }
-        JobLockNotExist => anyhow::Error::msg(format!("missing lock for job {job_id}. {command}")),
-        JobNotInState => {
-            anyhow::Error::msg(format!("Job {job_id} is not in state {state}. {command}"))
-        }
-        job_pending_dependencies_not_found => anyhow::Error::msg(format!(
-            "Job {job_id} pending dependencies not found. {command}"
-        )),
-        parent_job_not_exists => {
-            anyhow::Error::msg(format!("Parent job {job_id} not found. {command}"))
-        }
-        JobLockMismatch => anyhow::Error::msg(format!("Job {job_id} lock mismatch. {command}")),
-        _ => anyhow::Error::msg(format!("Unknown code {num} error for  {job_id}. {command}")),
-    }
+pub fn finished_errors(num: i8, job_id: &str, command: &str, _state: &str) -> BullError {
+    let cod_err = JobError::try_from(num).unwrap();
+    use JobError::*;
+
+    cod_err.into()
 }
 
 // Convert MoveToAcive to MoveToFinished;
 
-pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinishedResult> {
+pub fn convert_errors(
+    active_to_active: MoveToAciveResult,
+) -> Result<MoveToFinishedResult, BullError> {
     match active_to_active {
         (list, job_id, limit_until, delay) => {
             let mut job: Option<JobJsonRaw> = None;
@@ -898,6 +1028,9 @@ pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinis
 
             Ok((job, job_id, limit_until, delay))
         }
-        _ => Err(anyhow::Error::msg("failed to convert")),
+        _ => Err(BullError::ConversionError {
+            from: "move_to_active_results",
+            to: "move_to_finished_result",
+        }),
     }
 }
