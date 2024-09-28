@@ -1,11 +1,12 @@
 use bull::*;
+use enums::BullError;
 
 use std::collections::HashMap;
 
 use tokio::time::Instant;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), BullError> {
     let n = Instant::now();
     let pass = fetch_redis_pass();
     let mut config = HashMap::new();

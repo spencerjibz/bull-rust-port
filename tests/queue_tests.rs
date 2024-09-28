@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod queue {
 
-    use anyhow::Ok;
     use async_lazy::Lazy;
     use bull::*;
+    use enums::BullError;
 
     use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ mod queue {
     });
 
     #[tokio_shared_rt::test(shared)]
-    async fn add_job_to_queue() -> anyhow::Result<()> {
+    async fn add_job_to_queue() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -50,7 +50,7 @@ mod queue {
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
-    async fn add_job_to_queue_with_options() -> anyhow::Result<()> {
+    async fn add_job_to_queue_with_options() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -85,7 +85,7 @@ mod queue {
 
     #[tokio_shared_rt::test(shared)]
 
-    async fn remove_job_from_queue() -> anyhow::Result<()> {
+    async fn remove_job_from_queue() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -112,7 +112,7 @@ mod queue {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn get_job_state() -> anyhow::Result<()> {
+    async fn get_job_state() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let data = Data {
@@ -136,7 +136,7 @@ mod queue {
 
     #[tokio_shared_rt::test(shared)]
 
-    async fn is_paused() -> anyhow::Result<()> {
+    async fn is_paused() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
         queue.pause().await?;
         let mut paused: bool = queue.is_paused().await?;
@@ -149,7 +149,7 @@ mod queue {
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
-    async fn is_paused_with_custom_prefix() -> anyhow::Result<()> {
+    async fn is_paused_with_custom_prefix() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -178,7 +178,7 @@ mod queue {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn trim_events_manually() -> anyhow::Result<()> {
+    async fn trim_events_manually() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -213,7 +213,7 @@ mod queue {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn trim_events_manually_with_custom_prefix() -> anyhow::Result<()> {
+    async fn trim_events_manually_with_custom_prefix() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -248,7 +248,7 @@ mod queue {
         Ok(())
     }
     #[tokio_shared_rt::test(shared)]
-    async fn test_get_jobs() -> anyhow::Result<()> {
+    async fn test_get_jobs() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 

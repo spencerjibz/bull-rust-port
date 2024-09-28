@@ -1,25 +1,30 @@
 use std::cmp;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::error::Error;
+use std::future::IntoFuture;
 use std::sync::Arc;
 
-use anyhow::Ok;
-use anyhow::{anyhow, Context, Result};
+use crate::backtrace_utils::*;
+
 use async_atomic::Atomic;
 use async_event_emitter::AsyncEventEmitter;
+use enums::BullError;
 use futures::future::{BoxFuture, Future, FutureExt};
 use futures::lock::Mutex;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::TryFutureExt;
 use redis::Cmd;
 use redis::{FromRedisValue, ToRedisArgs};
+use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::timer::Timer;
 use crate::*;
-
-#[derive(Clone)]
+use enums::WorkerError;
+#[derive(Clone, Debug)]
 pub struct JobSetPair<D, R>(pub Job<D, R>, pub &'static str);
 
 impl<D, R> PartialEq for JobSetPair<D, R> {
@@ -38,10 +43,10 @@ impl<D, R> std::hash::Hash for JobSetPair<D, R> {
 }
 
 /// types
-type WorkerCallback<'a, D, R> =
-    dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, anyhow::Result<R>> + Send + Sync + 'static;
+pub(crate) type WorkerCallback<'a, D, R> =
+    dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, Result<R, BullError>> + Send + Sync + 'static;
 
-type ProcessingHandles<R> = Mutex<FuturesUnordered<JoinHandle<anyhow::Result<R>>>>;
+type ProcessingHandles<R> = Mutex<FuturesUnordered<JoinHandle<Result<R, BullError>>>>;
 
 pub struct Worker<D, R> {
     pub id: String,
@@ -85,16 +90,19 @@ where
         queue: &Queue,
         processor: C,
         mut opts: WorkerOptions,
-    ) -> Result<Arc<Worker<D, R>>>
+    ) -> Result<Arc<Worker<D, R>>, BullError>
     where
         C: Fn(JobSetPair<D, R>) -> F + Send + Sync + 'static,
-        F: Future<Output = anyhow::Result<R>> + Send + Sync + 'static,
+        F: Future<Output = Result<R, Box<dyn Error + Send + Sync>>> + Send + Sync + 'static,
     {
         let prefix = queue.prefix.to_owned();
         let queue_name = &queue.name;
         let connection = queue.manager.clone();
         let scripts = script::Scripts::new(prefix, queue_name.to_owned(), connection.pool.clone());
-        let callback = move |data: JobSetPair<D, R>| processor(data).boxed();
+        let callback = move |data: JobSetPair<D, R>| {
+            let fut = async_backtrace::frame!(processor(data));
+            fut.map_err(|err| err.into()).boxed()
+        };
         let queue_copy = queue.clone();
         static FORCE_CLOSING: Atomic<bool> = Atomic::new(false);
         static CLOSING: Atomic<bool> = Atomic::new(false);
@@ -172,15 +180,14 @@ where
 
         let worker_clone = worker.clone();
         // running worker could fail
-        if (worker.options.autorun) {
+        if worker.options.autorun {
             worker_clone.run().await?;
         }
         Ok(worker)
     }
-
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self) -> Result<(), BullError> {
         if self.running.as_ref().load() {
-            return Err(anyhow::anyhow!("Worker is already running"));
+            return Err(WorkerError::WorkerAlreadyRunningWithId(self.id.clone()).into());
         }
         let packed_args = (
             self.id.clone(),
@@ -200,7 +207,10 @@ where
 
         self.start_timers().await;
 
-        let main_task = tokio::spawn(main_loop(packed_args, self.processing.clone()));
+        let main_task = tokio::spawn(async_backtrace::frame!(main_loop(
+            packed_args,
+            self.processing.clone()
+        )));
         let current_task = self.main_task.clone();
         let mut current_task = current_task.lock().await;
         *current_task = Some(main_task);
@@ -271,7 +281,7 @@ async fn run_stalled_jobs(
     pool: Pool,
     emitter: Arc<Mutex<AsyncEventEmitter>>,
     options: Arc<WorkerOptions>,
-) -> anyhow::Result<()> {
+) -> Result<(), BullError> {
     let con_string = to_static_str(options.connection.clone());
 
     let mut scripts = Scripts::new(prefix, queue_name, pool);
@@ -285,19 +295,21 @@ async fn run_stalled_jobs(
                 .lock()
                 .await
                 .emit("failed", job_id.to_string())
-                .await?;
+                .await
+                .map_err(|err| BullError::EmitterError(err.to_string()))?;
         }
         for job_id in stalled {
             emitter
                 .lock()
                 .await
                 .emit("stalled", job_id.to_string())
-                .await?;
+                .await
+                .map_err(|err| BullError::EmitterError(err.to_string()))?;
         }
 
         return Ok(());
     }
-    let e = anyhow::anyhow!("Error checking stalled jobs");
+    let e: BullError = WorkerError::FailedToCheckStalledJobs.into();
     emitter
         .lock()
         .await
@@ -323,7 +335,7 @@ async fn extend_locks<
     pool: Pool,
     queue_name: String,
     prefix: String,
-) -> anyhow::Result<()> {
+) -> Result<(), BullError> {
     let mut scripts = Scripts::new(prefix, queue_name, pool);
     for JobSetPair(job, token) in jobs.lock().await.iter() {
         scripts
@@ -359,7 +371,7 @@ pub fn map_from_vec(value: &[String]) -> HashMap<String, String> {
 pub async fn wait_for_job(
     queue: Arc<Queue>,
     block_until: &'static Atomic<u64>,
-) -> anyhow::Result<Option<String>> {
+) -> Result<Option<String>, BullError> {
     use std::time::Duration;
     let mut con = queue.manager.pool.get().await?;
     let pool = queue.manager.pool.clone();
@@ -417,7 +429,7 @@ async fn next_job_from_job_data<
 >(
     packed_args: PackedArgs,
     token: Option<String>,
-) -> Result<Option<Job<D, R>>> {
+) -> Result<Option<Job<D, R>>, BullError> {
     let (drained, block_until, queue, job_data, job_id, limit_until, delay_until): PackedArgs =
         packed_args;
 
@@ -464,7 +476,7 @@ async fn move_to_active<
     options: Arc<WorkerOptions>,
     token: &str,
     job_id: Option<String>,
-) -> Result<Option<Job<D, R>>> {
+) -> Result<Option<Job<D, R>>, BullError> {
     let queue_name = queue.name.clone();
     let prefix = queue.prefix.to_owned();
     let pool = queue.manager.pool.clone();
@@ -517,7 +529,7 @@ pub async fn get_next_job<
     queue: Arc<Queue>,
     options: Arc<WorkerOptions>,
     token: &str,
-) -> anyhow::Result<Option<Job<D, R>>> {
+) -> Result<Option<Job<D, R>>, BullError> {
     let options = options.clone();
 
     if waiting.lock().await.is_none() {
@@ -544,17 +556,27 @@ pub async fn get_completed<
         + 'static
         + Deserialize<'a>,
 >(
-    jobs: Arc<ProcessingHandles<Option<Job<D, R>>>>,
-) -> anyhow::Result<Vec<Job<D, R>>> {
+    jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
+    emitter: Arc<Mutex<AsyncEventEmitter>>,
+    processing: Arc<ProcessingHandles<Option<Job<D, R>>>>,
+) -> Vec<Job<D, R>> {
     let mut completed = Vec::new();
-    if let Some(handle) = jobs.lock().await.next().await {
-        let result = handle.unwrap()?;
-        if let Some(job) = result {
-            completed.push(job.clone());
+    if let Some(handle) = processing.lock().await.next().await {
+        match handle {
+            std::result::Result::Ok(result) => {
+                if let std::result::Result::Ok(Some(job)) = result {
+                    completed.push(job.clone());
+                }
+            }
+            Err(err) => {
+                if err.is_panic() {
+                    // Handle cancelled task
+                }
+            }
         }
     }
 
-    Ok(completed)
+    completed
 }
 type PackedProcessArgs<D, R> = (
     Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
@@ -583,111 +605,98 @@ pub async fn process_job<
     args: PackedProcessArgs<D, R>,
     mut job: Job<D, R>,
     token: &'static str,
-) -> anyhow::Result<Option<Job<D, R>>> {
+) -> Result<Option<Job<D, R>>, BullError> {
+    use futures::future::{self, Future, FutureExt};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     let (jobs, emitter, processor, options, queue, force_closing, closing) = args;
 
     let callback = processor.clone();
     let data = JobSetPair(job.clone(), token);
+    jobs.lock().await.insert(data.clone());
 
-    let returned = callback(data).await; //.context("Error processing job ")?;
+    let returned = BacktraceCatcher::catch(callback(data)).await;
     let mut emitter = emitter.lock().await;
 
     match returned {
-        (res) => {
-            if res.is_ok() {
-                let result = res.ok().unwrap();
+        Ok(result) => {
+            if !force_closing.load() {
+                let queue_name = queue.name.clone();
+                let prefix = queue.prefix;
+                let pool = queue.manager.pool.clone();
+                let mut scripts = Scripts::new(prefix.to_string(), queue_name, pool);
 
-                if !force_closing.load() {
-                    let queue_name = queue.name.clone();
-                    let prefix = queue.prefix;
-                    let pool = queue.manager.pool.clone();
-                    let mut scripts = Scripts::new(prefix.to_string(), queue_name, pool);
+                let remove_on_complete = job.opts.remove_on_complete.clone().unwrap_or_default();
 
-                    let remove_on_complete =
-                        job.opts.remove_on_complete.clone().unwrap_or_default();
+                let fetch = !closing.load();
+                let end = scripts
+                    .move_to_completed(
+                        &mut job,
+                        serde_json::to_string(&result)?,
+                        remove_on_complete,
+                        token,
+                        &options,
+                        fetch,
+                    )
+                    .await?;
+                let done = result.clone();
+                let name = job.name;
+                let id = job.id.clone();
 
-                    let fetch = !closing.load();
-                    let end = scripts
-                        .move_to_completed(
-                            &mut job,
-                            serde_json::to_string(&result)?,
-                            remove_on_complete,
-                            token,
-                            &options,
-                            fetch,
-                        )
-                        .await
-                        .context("Error completing job")?;
-                    let done = result.clone();
-                    let name = job.name;
-                    let id = job.id.clone();
+                let finished_job = end;
+                println!("{:?} {}", &finished_job, &name);
 
-                    let finished_job = end;
-                    println!("{:?} {}", &finished_job, &name);
+                return match finished_job {
+                    MoveToFinishedResults::MoveToNext(data) => {
+                        let move_to_active: MoveToAciveResult = data.into();
+                        let (data, _id, _ts, _) = convert_errors(move_to_active)?;
 
-                    return match finished_job {
-                        MoveToFinishedResults::MoveToNext(data) => {
-                            let move_to_active: MoveToAciveResult = data.into();
-                            let (data, _id, _ts, _) = convert_errors(move_to_active)?;
+                        let static_id = to_static_str(job.id.clone());
+                        if let Some(mut data) = data {
+                            let job: Job<D, R> =
+                                Job::from_raw_job(&mut data, &queue, static_id).await?;
 
-                            let static_id = to_static_str(job.id.clone());
-                            if let Some(mut data) = data {
-                                let job: Job<D, R> =
-                                    Job::from_raw_job(&mut data, &queue, static_id).await?;
-
-                                return Ok(Some(job));
-                            }
-                            Ok(None)
+                            return Ok(Some(job));
                         }
-                        MoveToFinishedResults::Completed => {
-                            emitter
-                                .emit("completed", (name, job.id.clone(), done))
-                                .await?;
-                            jobs.lock().await.remove(&JobSetPair(job.clone(), token));
+                        Ok(None)
+                    }
+                    MoveToFinishedResults::Completed => {
+                        emitter
+                            .emit("completed", (name, job.id.clone(), done))
+                            .await
+                            .map_err(|err| BullError::EmitterError(err.to_string()));
+                        jobs.lock().await.remove(&JobSetPair(job.clone(), token));
 
-                            return Ok(None);
-                        }
-                        MoveToFinishedResults::Error(code) => {
-                            Err(finished_errors(code, &job.id, "finished", "active"))
-                        }
-                    };
-                }
-                Ok(None)
-            } else {
-                let e = res.err().unwrap();
-                emitter
-                    .emit("error", (e.to_string(), job.name, job.id.clone()))
-                    .await;
-
-                if !force_closing.load() {
-                    println!("Error processing job: {}", e);
-                    job.move_to_failed(e.to_string(), token, false).await?;
-                    let name = job.name;
-                    let id = job.id.clone();
-                    emitter.emit("failed", (name, id, e.to_string())).await;
-                }
-                jobs.lock().await.remove(&JobSetPair(job.clone(), token));
-                Ok(None)
+                        return Ok(None);
+                    }
+                    MoveToFinishedResults::Error(code) => {
+                        Err(finished_errors(code, &job.id, "finished", "active"))
+                    }
+                };
             }
+            Ok(None)
         }
-        Err(e) => {
+        Err(err) => {
+            let failed_reason = String::new();
+            dbg!(&err);
+            let e = match err {
+                CaughtError::Panic(str) => str,
+                CaughtError::Error(error, backtrace) => format!("{:#?}", backtrace),
+            };
             emitter
-                .emit("error", (e.to_string(), job.name, job.id.clone()))
+                .emit("error", (e.clone(), job.name, job.id.clone()))
                 .await;
 
             if !force_closing.load() {
-                println!("Error processing job: {}", e);
-                job.move_to_failed(e.to_string(), token, false).await?;
+                job.move_to_failed(e.clone(), token, false).await?;
                 let name = job.name;
                 let id = job.id.clone();
-                emitter.emit("failed", (name, id, e.to_string())).await;
+                emitter.emit("failed", (name, id, e)).await;
             }
             jobs.lock().await.remove(&JobSetPair(job.clone(), token));
             Ok(None)
         }
     }
 }
-
 //the main loop;
 
 // packed Args;
@@ -753,15 +762,19 @@ async fn main_loop<D, R>(
             let queue = queue.clone();
 
             let opts = options.clone();
-            let awaiting_job = get_next_job(waiting, drained, block_until, queue, opts, stat_token);
 
-            let task = tokio::spawn(awaiting_job);
+            let task = tokio::spawn(async_backtrace::frame!(get_next_job(
+                waiting,
+                drained,
+                block_until,
+                queue,
+                opts,
+                stat_token,
+            )));
             processing.lock().await.push(task);
         }
 
-        let mut tasks = get_completed(processing.clone())
-            .await
-            .expect("failed to run");
+        let mut tasks = get_completed(jobs.clone(), emitter.clone(), processing.clone()).await;
 
         while let Some(job) = tasks.pop() {
             // only process incomplete jobs;
@@ -777,7 +790,11 @@ async fn main_loop<D, R>(
                     closing,
                 );
 
-                let next_job = tokio::spawn(process_job(args, job.clone(), token));
+                let next_job = tokio::spawn(async_backtrace::frame!(process_job(
+                    args,
+                    job.clone(),
+                    token
+                )));
 
                 processing.lock().await.push(next_job)
             } else {

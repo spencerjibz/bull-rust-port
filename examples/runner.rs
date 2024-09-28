@@ -1,9 +1,8 @@
-use anyhow::Ok;
 use async_atomic::Atomic;
 use async_lazy::Lazy;
 use bull::*;
+use enums::BullError;
 use lazy_static::lazy_static;
-use rand::random;
 use std::collections::HashMap;
 use std::time::Instant;
 use uuid::Uuid;
@@ -25,7 +24,7 @@ static QUEUE: Lazy<Queue> = Lazy::const_new(|| {
     })
 });
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), BullError> {
     use maplit::hashmap;
     use std::sync::Arc;
     use worker::{JobSetPair, Worker};
@@ -47,13 +46,8 @@ async fn main() -> anyhow::Result<()> {
     //let count_copy = count.clone();
     let processor = |_data: JobSetPair<JobDataType, String>| async move {
         //println!(" processing job {:#?}", _data.0);
-        let job = _data.0;
-        if job.id.contains("9") {
-            //return Err(anyhow::Error::msg("failed here "));
-            panic!("here")
-        }
 
-        anyhow::Ok("done".to_owned())
+        Ok("done".to_owned())
     };
     let now = Instant::now();
 
@@ -88,12 +82,6 @@ async fn main() -> anyhow::Result<()> {
             },
         )
         .await;
-    worker
-        .on("failed", |(name, id, error): (String, String, String)| {
-            dbg!(name, id, error);
-            async move {}
-        })
-        .await;
 
     worker.run().await?;
     // tokio::time::sleep(Duration::from_secs(2)).await;
@@ -108,5 +96,5 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
     }
-    Ok(())
+    Ok::<(), BullError>(())
 }

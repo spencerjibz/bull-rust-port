@@ -2,6 +2,7 @@ use super::*;
 
 use core::num;
 
+use enums::BullError;
 use futures::{self, lock::Mutex};
 use redis::Commands;
 use redis::{FromRedisValue, RedisResult, ToRedisArgs};
@@ -100,10 +101,10 @@ impl<
     pub fn is_completed(&self) -> bool {
         self.return_value.is_some() && self.finished_on > Some(0)
     }
-    pub async fn get_state(&self) -> anyhow::Result<String> {
+    pub async fn get_state(&self) -> Result<String, BullError> {
         self.scripts.lock().await.get_state(&self.id).await
     }
-    pub async fn remove(&self, remove_children: bool) -> anyhow::Result<()> {
+    pub async fn remove(&self, remove_children: bool) -> Result<(), BullError> {
         self.scripts
             .lock()
             .await
@@ -114,7 +115,7 @@ impl<
     pub async fn update_progress<T: Serialize>(
         &mut self,
         progress: T,
-    ) -> anyhow::Result<Option<i8>> {
+    ) -> Result<Option<i8>, BullError> {
         self.progress = Some(serde_json::to_string(&progress)?);
         self.scripts
             .lock()
@@ -123,7 +124,7 @@ impl<
             .await
     }
 
-    pub async fn update_data(&mut self, data: D) -> anyhow::Result<()> {
+    pub async fn update_data(&mut self, data: D) -> Result<(), BullError> {
         let result = self
             .scripts
             .lock()
@@ -142,7 +143,7 @@ impl<
 
         opts: JobOptions,
         job_id: Option<String>,
-    ) -> anyhow::Result<Job<D, R>> {
+    ) -> Result<Job<D, R>, BullError> {
         let prefix = &queue.prefix;
         let queue_name = &queue.name;
         let dup_conn = queue.manager.pool.clone();
@@ -196,7 +197,7 @@ impl<
         mut queue: &Queue,
         map: HashMap<String, String>,
         job_id: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, BullError> {
         let mut obj = JobJsonRaw::from_map(map)?;
         Self::from_raw_job(&mut obj, queue, job_id).await
     }
@@ -204,11 +205,11 @@ impl<
         mut queue: &Queue,
         raw_string: String,
         job_id: &str,
-    ) -> anyhow::Result<Job<D, R>> {
+    ) -> Result<Job<D, R>, BullError> {
         let mut json = JobJsonRaw::fromStr(raw_string)?;
         Self::from_raw_job(&mut json, queue, job_id).await
     }
-    pub fn opts_from_json(&mut self, raw_opts: String) -> anyhow::Result<JobOptions> {
+    pub fn opts_from_json(&mut self, raw_opts: String) -> Result<JobOptions, BullError> {
         let opts = serde_json::from_str::<JobOptions>(&raw_opts)?;
         Ok(opts)
     }
@@ -216,7 +217,7 @@ impl<
         json: &mut JobJsonRaw,
         queue: &Queue,
         job_id: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, BullError> {
         let name = json.name;
         let mut opts = serde_json::from_str::<JobOptions>(json.opts).unwrap_or_default();
 
@@ -257,32 +258,32 @@ impl<
 
         Ok(job)
     }
-    pub async fn is_waiting(&self) -> anyhow::Result<bool> {
+    pub async fn is_waiting(&self) -> Result<bool, BullError> {
         let result = self.is_in_in_list("wait").await? || self.is_in_in_list("paused").await?;
 
         Ok(result)
     }
 
-    pub async fn promote(&mut self) -> anyhow::Result<()> {
+    pub async fn promote(&mut self) -> Result<(), BullError> {
         let result = self.scripts.lock().await.promote(&self.id).await?;
         self.delay = 0;
         Ok(())
     }
-    pub async fn is_delayed(&self) -> anyhow::Result<bool> {
+    pub async fn is_delayed(&self) -> Result<bool, BullError> {
         let mut conn = self.queue.manager.pool.get().await?;
         let score: Option<isize> = conn
             .zscore(self.scripts.lock().await.to_key("delayed"), &self.id)
             .await?;
         Ok(score.is_some())
     }
-    pub async fn is_in_zset(&self, set: &str) -> anyhow::Result<bool> {
+    pub async fn is_in_zset(&self, set: &str) -> Result<bool, BullError> {
         let mut conn = self.queue.manager.pool.get().await?;
         let key = self.scripts.lock().await.to_key(set);
         let score: Option<isize> = conn.zscore(&key, &self.id).await?;
         Ok(score.is_some())
     }
 
-    pub async fn is_in_in_list(&self, list_name: &str) -> anyhow::Result<bool> {
+    pub async fn is_in_in_list(&self, list_name: &str) -> Result<bool, BullError> {
         let key = self.scripts.lock().await.to_key(list_name);
         let result = self
             .scripts
@@ -293,7 +294,7 @@ impl<
         Ok(result)
     }
 
-    pub async fn from_id(queue: &Queue, job_id: &str) -> anyhow::Result<Option<Job<D, R>>> {
+    pub async fn from_id(queue: &Queue, job_id: &str) -> Result<Option<Job<D, R>>, BullError> {
         // use redis to get the job;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
         let mut conn = queue.manager.pool.clone().get().await?;
@@ -315,7 +316,7 @@ impl<
         err: String,
         token: &str,
         fetch_next: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), BullError> {
         self.failed_reason = Some(err.clone());
         let mut move_to_failed = false;
 
@@ -411,7 +412,7 @@ impl<
         job_id: &str,
         log_row: &str,
         keep_logs: Option<isize>,
-    ) -> anyhow::Result<isize> {
+    ) -> Result<isize, BullError> {
         let scripts = self.scripts.lock().await;
         let key = scripts.to_key(format!("{job_id}:logs").as_str());
         let mut connection = scripts.connection.get().await?;
@@ -433,7 +434,7 @@ impl<
         &mut self,
         conn: &mut Connection,
         err_stack: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), BullError> {
         if !err_stack.is_empty() {
             self.stack_trace.push(err_stack.clone());
             if let Some(limit) = self.opts.stacktrace_limit {
@@ -462,11 +463,11 @@ impl<
         Ok(())
     }
 
-    pub fn to_string(&self) -> anyhow::Result<String> {
+    pub fn to_string(&self) -> Result<String, BullError> {
         let string = serde_json::to_string(&self)?;
         Ok(string)
     }
-    pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
+    pub fn save_to_file(&self, path: &str) -> Result<(), BullError> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
 

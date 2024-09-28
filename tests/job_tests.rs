@@ -2,9 +2,9 @@
 #![allow(clippy::needless_return)]
 #[cfg(test)]
 mod job {
-    use anyhow::Ok;
     use async_lazy::Lazy;
     use bull::*;
+    use enums::BullError;
 
     use std::collections::HashMap;
     use std::env;
@@ -26,7 +26,7 @@ mod job {
     });
 
     #[tokio_shared_rt::test(shared)]
-    async fn creating_a_new_job() -> anyhow::Result<()> {
+    async fn creating_a_new_job() -> Result<(), BullError> {
         let queue = QUEUE.force().await;
 
         let job = Job::<String, String>::new(
@@ -43,7 +43,7 @@ mod job {
     }
 
     #[tokio_shared_rt::test]
-    async fn create_job_from_string() -> anyhow::Result<()> {
+    async fn create_job_from_string() -> Result<(), BullError> {
         let pass = fetch_redis_pass();
 
         let mut config = HashMap::new();
@@ -74,7 +74,7 @@ mod job {
     }
 
     #[tokio_shared_rt::test]
-    async fn set_and_get_progress_as_number() -> anyhow::Result<()> {
+    async fn set_and_get_progress_as_number() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -108,7 +108,7 @@ mod job {
         Ok(())
     }
     #[tokio_shared_rt::test]
-    async fn set_and_get_progress_as_an_object() -> anyhow::Result<()> {
+    async fn set_and_get_progress_as_an_object() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -155,7 +155,7 @@ mod job {
     }
 
     #[tokio_shared_rt::test]
-    async fn test_job_state() -> anyhow::Result<()> {
+    async fn test_job_state() -> Result<(), BullError> {
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
 
@@ -188,7 +188,7 @@ mod job {
         Ok(())
     }
     #[tokio_shared_rt::test]
-    async fn update_job_data() -> anyhow::Result<()> {
+    async fn update_job_data() -> Result<(), BullError> {
         use maplit::hashmap;
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();
@@ -267,7 +267,7 @@ mod job {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn promote_delayed_jobs() -> anyhow::Result<()> {
+    async fn promote_delayed_jobs() -> Result<(), BullError> {
         use maplit::hashmap;
         let mut config = HashMap::new();
         let pass = fetch_redis_pass();

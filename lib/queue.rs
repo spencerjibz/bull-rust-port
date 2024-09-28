@@ -1,10 +1,3 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt;
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
-use anyhow::Ok;
 use deadpool_redis::Connection;
 use futures::lock::Mutex;
 use futures::stream::FuturesUnordered;
@@ -12,8 +5,13 @@ use futures::StreamExt;
 use redis::streams::StreamMaxlen;
 use redis::{AsyncCommands, FromRedisValue};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
+use std::future::Future;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 
-use crate::enums::{PttlError, QueueError};
+use crate::enums::{BullError, PttlError};
 use crate::job::{self, Job};
 use crate::options::{JobOptions, QueueOptions, RetryJobOptions};
 use crate::redis_connection::{RedisConnection, RedisOpts};
@@ -41,7 +39,7 @@ impl Queue {
         name: &str,
         redis_opts: RedisOpts,
         queue_opts: QueueOptions,
-    ) -> anyhow::Result<Queue> {
+    ) -> Result<Queue, BullError> {
         let prefix = queue_opts.prefix.unwrap_or("bull");
 
         let new_connection = RedisConnection::init(redis_opts.clone()).await?;
@@ -76,7 +74,7 @@ impl Queue {
         data: D,
         opts: JobOptions,
         job_id: Option<String>,
-    ) -> anyhow::Result<Job<D, R>> {
+    ) -> Result<Job<D, R>, BullError> {
         let copy = self.clone();
         let mut job = Job::<D, R>::new(name, self, data, opts, job_id).await?;
         let job_id = self.scripts.lock().await.add_job(&job).await?;
@@ -85,14 +83,14 @@ impl Queue {
         Ok(job)
     }
 
-    pub async fn pause(&self) -> anyhow::Result<()> {
+    pub async fn pause(&self) -> Result<(), BullError> {
         self.scripts.lock().await.pause(true).await
     }
-    pub async fn resume(&self) -> anyhow::Result<()> {
+    pub async fn resume(&self) -> Result<(), BullError> {
         self.scripts.lock().await.pause(false).await
     }
 
-    pub async fn is_paused(&self) -> anyhow::Result<bool> {
+    pub async fn is_paused(&self) -> Result<bool, BullError> {
         let prefix = self.opts.prefix.unwrap_or("bull");
         let key = format!("{}:{}:meta", prefix, self.name);
         let mut conn = self.manager.pool.get().await?;
@@ -103,7 +101,7 @@ impl Queue {
         Ok(paused_key_exists)
     }
 
-    pub async fn obliterate(&self, force: bool) -> anyhow::Result<()> {
+    pub async fn obliterate(&self, force: bool) -> Result<(), BullError> {
         self.pause().await?;
         loop {
             let cursor = self.scripts.lock().await.obliterate(1000, force).await?;
@@ -115,7 +113,7 @@ impl Queue {
         Ok(())
     }
 
-    pub async fn retry_jobs(&self, opts: RetryJobOptions) -> anyhow::Result<()> {
+    pub async fn retry_jobs(&self, opts: RetryJobOptions) -> Result<(), BullError> {
         loop {
             let cursor = self
                 .scripts
@@ -135,7 +133,7 @@ impl Queue {
         job_id: &str,
         range: Option<RangeInclusive<isize>>,
         asc: bool,
-    ) -> anyhow::Result<Logs> {
+    ) -> Result<Logs, BullError> {
         let scripts = self.scripts.lock().await;
         let key = scripts.to_key(format!("{job_id}:logs").as_str());
         let mut con = self.manager.pool.get().await?;
@@ -157,21 +155,21 @@ impl Queue {
         }
         Ok(Logs { logs, count })
     }
-    pub async fn get_rate_limit_ttl(&self) -> Result<i64, QueueError> {
+    pub async fn get_rate_limit_ttl(&self) -> Result<i64, BullError> {
         use std::result::Result::Ok;
         let limiter_key = self.scripts.lock().await.to_key("limiter");
         let mut con = self.manager.pool.get().await?;
         let result: i64 = redis::Cmd::pttl(&limiter_key).query_async(&mut con).await?;
 
         match result {
-            -1 => Err(QueueError::RedisPttLError(PttlError::NoExpirationWithKey(
+            -1 => Err(BullError::RedisPttLError(PttlError::NoExpirationWithKey(
                 limiter_key,
             ))),
-            -2 => Err(QueueError::RedisPttLError(PttlError::KeyNotFound)),
+            -2 => Err(BullError::RedisPttLError(PttlError::KeyNotFound)),
             _ => Ok(result),
         }
     }
-    pub async fn trim_events(&self, max_length: usize) -> anyhow::Result<i8> {
+    pub async fn trim_events(&self, max_length: usize) -> Result<i8, BullError> {
         let b = format!("bull:{}:events", self.name);
         let key = self.opts.prefix.unwrap_or(&b);
         let mut conn = self.manager.pool.get().await?;
@@ -184,7 +182,7 @@ impl Queue {
     pub async fn get_job_counts(
         &self,
         types: &[&'static str],
-    ) -> anyhow::Result<HashMap<String, i64>> {
+    ) -> Result<HashMap<String, i64>, BullError> {
         let mut counts = HashMap::new();
 
         let mut current_types = self.sanitize_job_types(types);
@@ -207,7 +205,7 @@ impl Queue {
         types: &[&'static str],
         range: Option<RangeInclusive<isize>>,
         asc: bool,
-    ) -> anyhow::Result<(Vec<JobJsonRaw>)> {
+    ) -> Result<Vec<JobJsonRaw>, BullError> {
         let mut start = 0;
         let mut end = -1;
         if let Some(range) = range {
@@ -230,11 +228,11 @@ impl Queue {
             .map(|id| async {
                 let mut job = JobJsonRaw::from_id(id.clone(), self).await?;
                 job.id = to_static_str(id);
-                Ok(job)
+                Ok::<JobJsonRaw, BullError>(job)
             })
             .collect();
 
-        while let Some(std::result::Result::Ok(job)) = futures.next().await {
+        while let Some(Ok(job)) = futures.next().await {
             result_set.push(job);
         }
         result_set.sort_by(|a, b| a.id.cmp(b.id));
@@ -264,7 +262,7 @@ impl Queue {
         ]
     }
 
-    pub async fn remove_job(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
+    pub async fn remove_job(&self, job_id: String, remove_children: bool) -> Result<(), BullError> {
         self.scripts
             .lock()
             .await
@@ -273,7 +271,7 @@ impl Queue {
         Ok(())
     }
 
-    pub async fn get_job_state(&self, job_id: &str) -> anyhow::Result<String> {
+    pub async fn get_job_state(&self, job_id: &str) -> Result<String, BullError> {
         let state = self.scripts.lock().await.get_state(job_id).await?;
         Ok(state)
     }

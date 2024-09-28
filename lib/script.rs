@@ -5,8 +5,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::num::NonZero;
 
-use anyhow::Ok;
-use anyhow::Result;
 use derive_redis_json::RedisJsonValue;
 
 use maplit::hashmap;
@@ -16,8 +14,10 @@ use redis_derive::FromRedisValue;
 use rmp::encode;
 use serde::{Deserialize, Serialize};
 
+use crate::enums::BullError;
 //use crate::move_to_finished::{self, move_job_to_finished};
-use crate::enums::ErrorCode::{self, *};
+use crate::enums;
+use crate::enums::JobError;
 use crate::redis_connection::*;
 use crate::worker::map_from_vec;
 use crate::Parent;
@@ -140,7 +140,7 @@ impl Scripts {
         job_id: &str,
         lifo: bool,
         token: &str,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         let mut keys = self.get_keys(&["active", "wait", "paused"]);
         keys.push(self.to_key(job_id));
         keys.push(self.to_key("meta"));
@@ -162,7 +162,7 @@ impl Scripts {
     pub async fn add_job<'s, D: Serialize + Clone + Deserialize<'s>, R: FromRedisValue>(
         &self,
         job: &Job<D, R>,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> Result<Option<i64>, BullError> {
         let e = job.queue.prefix.to_owned();
         let prefix = self.to_key("");
         let name = job.name;
@@ -219,7 +219,7 @@ impl Scripts {
             .await?;
         Ok(result)
     }
-    pub async fn pause(&self, pause: bool) -> anyhow::Result<()> {
+    pub async fn pause(&self, pause: bool) -> Result<(), BullError> {
         let src = if pause { "wait" } else { "paused" };
         let dst = if pause { "paused" } else { "wait" };
         let keys = self.get_keys(&[src, dst, "meta", "events"]);
@@ -243,7 +243,7 @@ impl Scripts {
         state: String,
         count: i64,
         timestamp: i64,
-    ) -> anyhow::Result<i8> {
+    ) -> Result<i8, BullError> {
         let current = if !state.is_empty() {
             state
         } else {
@@ -269,7 +269,8 @@ impl Scripts {
             .await?;
         Ok(result)
     }
-    pub async fn obliterate(&self, count: i64, force: bool) -> anyhow::Result<i64> {
+    pub async fn obliterate(&self, count: i64, force: bool) -> Result<i64, BullError> {
+        use crate::enums::QueueError;
         let count = if count > 0 { count } else { 1000 };
         let mut connection = self.connection.get().await?;
         let keys = self.get_keys(&["meta", ""]);
@@ -283,11 +284,9 @@ impl Scripts {
             .await?;
 
         if result == -1 {
-            return Err(anyhow::Error::msg("Cannot obliterate non-paused queue"));
+            return Err(QueueError::FailedToObliterate.into());
         } else if result == -2 {
-            return Err(anyhow::Error::msg(
-                "cannot obliterate queue with active jobs",
-            ));
+            return Err(QueueError::CantObliterateWhileJobsActive.into());
         }
         Ok(result)
     }
@@ -297,7 +296,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         job_id: Option<String>,
-    ) -> anyhow::Result<MoveToAciveResult> {
+    ) -> Result<MoveToAciveResult, BullError> {
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
         let lock_duration = opts.lock_duration;
@@ -357,7 +356,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         let timestamp = generate_timestamp()?;
         let metrics_key = self.to_key(&format!("metrics:{target}"));
         let mut keys = self.get_keys(&[
@@ -485,7 +484,7 @@ impl Scripts {
         job_id: &str,
         token: &str,
         duration: i64,
-    ) -> anyhow::Result<u64> {
+    ) -> Result<u64, BullError> {
         let stalled = self.to_key("stalled");
         let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
         let mut conn = self.connection.get().await?;
@@ -505,7 +504,7 @@ impl Scripts {
         &self,
         max_stalled_count: i64,
         stalled_interval: i64,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         let prefix = self.to_key("");
         let timestamp = generate_timestamp()?;
         let keys = self.get_keys(&[
@@ -537,7 +536,7 @@ impl Scripts {
         &self,
         job_id: &str,
         progress: P,
-    ) -> anyhow::Result<Option<i8>> {
+    ) -> Result<Option<i8>, BullError> {
         let keys = [self.to_key(job_id), self.to_key("events")];
 
         let progress = serde_json::to_string(&progress)?;
@@ -563,7 +562,7 @@ impl Scripts {
         }
     }
 
-    pub async fn promote(&self, job_id: &str) -> anyhow::Result<Option<i8>> {
+    pub async fn promote(&self, job_id: &str) -> Result<Option<i8>, BullError> {
         let mut keys = self.get_keys(&[
             "delayed",
             "wait",
@@ -615,7 +614,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         self.move_to_finished(
             job,
             val,
@@ -639,7 +638,7 @@ impl Scripts {
         token: &str,
         opts: &WorkerOptions,
         fetch_next: bool,
-    ) -> anyhow::Result<MoveToFinishedResults> {
+    ) -> Result<MoveToFinishedResults, BullError> {
         self.move_to_finished(
             job,
             failed_reason,
@@ -653,7 +652,10 @@ impl Scripts {
         .await
     }
 
-    pub async fn get_counts(&self, mut types: impl Iterator<Item = &str>) -> Result<Vec<i64>> {
+    pub async fn get_counts(
+        &self,
+        mut types: impl Iterator<Item = &str>,
+    ) -> Result<Vec<i64>, BullError> {
         let keys = self.get_keys(&[""]);
         let mut conn = self.connection.get().await?;
         let transformed_types: Vec<_> = types
@@ -675,7 +677,7 @@ impl Scripts {
         start: isize,
         end: isize,
         asc: bool,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
+    ) -> Result<Vec<Vec<String>>, BullError> {
         use maplit::hashmap;
         let mut commands = vec![];
         let switcher = hashmap! {"completed" => "zrange",
@@ -727,7 +729,7 @@ impl Scripts {
         job_id: &str,
         timestamp: i64,
         token: &str,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>), BullError> {
         use std::cmp::max;
         let mut max_timestamp = max(0, timestamp);
         let int = job_id.parse::<i64>()?;
@@ -755,7 +757,7 @@ impl Scripts {
         &self,
         job_id: &str,
         data: D,
-    ) -> anyhow::Result<i64> {
+    ) -> Result<i64, BullError> {
         let keys = [self.to_key(job_id)];
         let json_data = serde_json::to_string(&data)?;
         let mut con = self.connection.get().await?;
@@ -771,7 +773,7 @@ impl Scripts {
         Ok(result)
     }
 
-    pub async fn get_state(&self, job_id: &str) -> anyhow::Result<String> {
+    pub async fn get_state(&self, job_id: &str) -> Result<String, BullError> {
         let keys = self.get_keys(&[
             "completed",
             "failed",
@@ -806,7 +808,7 @@ impl Scripts {
         Ok(result)
     }
 
-    pub async fn is_job_in_list(&self, list_key: &str, job_id: &str) -> anyhow::Result<bool> {
+    pub async fn is_job_in_list(&self, list_key: &str, job_id: &str) -> Result<bool, BullError> {
         let mut result: Vec<String> = vec![];
         let mut conn = self.connection.get().await?;
         let version = self.redis_version.clone();
@@ -833,7 +835,7 @@ impl Scripts {
         Ok(result.contains(&job_id.to_owned()))
     }
 
-    pub async fn remove(&self, job_id: String, remove_children: bool) -> anyhow::Result<()> {
+    pub async fn remove(&self, job_id: String, remove_children: bool) -> Result<(), BullError> {
         let prefix = self.to_key("");
 
         //mutate the first value in the keys array
@@ -980,7 +982,7 @@ fn test_get_script() {
     assert!(!script.is_empty());
 }
 
-pub fn generate_timestamp() -> anyhow::Result<u64> {
+pub fn generate_timestamp() -> Result<u64, BullError> {
     use std::time::SystemTime;
     let result = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -990,7 +992,7 @@ pub fn generate_timestamp() -> anyhow::Result<u64> {
 }
 
 // write a function that return the version of the redis server
-pub async fn get_server_version(conn: &mut Connection) -> anyhow::Result<String> {
+pub async fn get_server_version(conn: &mut Connection) -> Result<String, BullError> {
     let result: String = redis::cmd("INFO").arg("server").query_async(conn).await?;
     for line in result.lines() {
         if line.starts_with("redis_version") {
@@ -1001,30 +1003,18 @@ pub async fn get_server_version(conn: &mut Connection) -> anyhow::Result<String>
     Ok("".to_string())
 }
 
-pub fn finished_errors(num: i8, job_id: &str, command: &str, _state: &str) -> anyhow::Error {
-    let code = ErrorCode::try_from(num).unwrap();
-    match code {
-        _code_job_not_exist => {
-            anyhow::Error::msg(format!("Missing Key for job ${job_id}. {command}"))
-        }
-        JobLockNotExist => anyhow::Error::msg(format!("missing lock for job {job_id}. {command}")),
-        JobNotInState => {
-            anyhow::Error::msg(format!("Job {job_id} is not in state {_state}. {command}"))
-        }
-        _job_pending_dependencies_not_found => anyhow::Error::msg(format!(
-            "Job {job_id} pending dependencies not found. {command}"
-        )),
-        _parent_job_not_exists => {
-            anyhow::Error::msg(format!("Parent job {job_id} not found. {command}"))
-        }
-        JobLockMismatch => anyhow::Error::msg(format!("Job {job_id} lock mismatch. {command}")),
-        _ => anyhow::Error::msg(format!("Unknown code {num} error for  {job_id}. {command}")),
-    }
+pub fn finished_errors(num: i8, job_id: &str, command: &str, _state: &str) -> BullError {
+    let cod_err = JobError::try_from(num).unwrap();
+    use JobError::*;
+
+    cod_err.into()
 }
 
 // Convert MoveToAcive to MoveToFinished;
 
-pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinishedResult> {
+pub fn convert_errors(
+    active_to_active: MoveToAciveResult,
+) -> Result<MoveToFinishedResult, BullError> {
     match active_to_active {
         (list, job_id, limit_until, delay) => {
             let mut job: Option<JobJsonRaw> = None;
@@ -1038,6 +1028,9 @@ pub fn convert_errors(active_to_active: MoveToAciveResult) -> Result<MoveToFinis
 
             Ok((job, job_id, limit_until, delay))
         }
-        _ => Err(anyhow::Error::msg("failed to convert")),
+        _ => Err(BullError::ConversionError {
+            from: "move_to_active_results",
+            to: "move_to_finished_result",
+        }),
     }
 }

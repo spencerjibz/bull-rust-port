@@ -3,6 +3,7 @@ use std::{borrow::Borrow, collections::HashMap, fmt::Display};
 use std::fmt;
 use std::sync::Arc;
 
+use crate::enums::BullError;
 use crate::worker::map_from_vec;
 use crate::StoredFn;
 use crate::{to_static_str, Queue};
@@ -257,7 +258,7 @@ pub struct JobJsonRaw {
 }
 
 impl JobJsonRaw {
-    pub fn from_map(map: HashMap<String, String>) -> anyhow::Result<JobJsonRaw> {
+    pub fn from_map(map: HashMap<String, String>) -> Result<JobJsonRaw, BullError> {
         let mut job = JobJsonRaw::default();
         for (k, v) in map {
             let v = to_static_str(v);
@@ -294,7 +295,8 @@ impl JobJsonRaw {
         Ok(job)
     }
 
-    pub async fn from_id(job_id: String, queue: &Queue) -> anyhow::Result<JobJsonRaw> {
+    pub async fn from_id(job_id: String, queue: &Queue) -> Result<JobJsonRaw, BullError> {
+        use crate::enums::JobError;
         let key = format!("{}:{}:{}", &queue.prefix, &queue.name, job_id);
         let mut conn = queue.manager.pool.clone().get().await?;
         let raw_data: Vec<String> = redis::Cmd::hgetall(key).query_async(&mut conn).await?;
@@ -302,12 +304,14 @@ impl JobJsonRaw {
         let map = map_from_vec(&raw_data);
 
         if raw_data.is_empty() {
-            return Err(anyhow::Error::msg("job not failed"));
+            return Err(JobError::JobNotFound.into());
         }
         JobJsonRaw::from_map(map)
     }
 
-    pub fn from_value_map(map: HashMap<String, serde_json::Value>) -> anyhow::Result<JobJsonRaw> {
+    pub fn from_value_map(
+        map: HashMap<String, serde_json::Value>,
+    ) -> Result<JobJsonRaw, BullError> {
         let mut job = JobJsonRaw::default();
         for (k, v) in map {
             match k.as_str() {
@@ -395,7 +399,7 @@ impl JobJsonRaw {
         Ok(job)
     }
     #[allow(non_snake_case)]
-    pub fn fromStr(s: String) -> anyhow::Result<JobJsonRaw> {
+    pub fn fromStr(s: String) -> Result<JobJsonRaw, BullError> {
         // passed the map;
         let static_str = to_static_str(s);
         let map: HashMap<String, serde_json::Value> = serde_json::from_str(static_str)?;
@@ -403,7 +407,7 @@ impl JobJsonRaw {
         let json = JobJsonRaw::from_value_map(map)?;
         Ok(json)
     }
-    pub fn save_to_file(&self, path: &str) -> anyhow::Result<()> {
+    pub fn save_to_file(&self, path: &str) -> Result<(), BullError> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
 
