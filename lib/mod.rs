@@ -1,4 +1,4 @@
-#![allow(dead_code, unused)]
+#![allow(dead_code, unused, dependency_on_unit_never_type_fallback)]
 pub mod options;
 mod queue;
 pub use queue::*;
