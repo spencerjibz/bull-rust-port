@@ -182,7 +182,6 @@ where
         if self.running.as_ref().load() {
             return Err(anyhow::anyhow!("Worker is already running"));
         }
-
         let packed_args = (
             self.id.clone(),
             self.closed,
@@ -204,9 +203,7 @@ where
         let main_task = tokio::spawn(main_loop(packed_args, self.processing.clone()));
         let current_task = self.main_task.clone();
         let mut current_task = current_task.lock().await;
-
         *current_task = Some(main_task);
-
         self.running.store(true);
         //self.timer.as_mut().unwrap().stop();
         //self.stalled_check_timer.as_mut().unwrap().stop();
@@ -658,10 +655,19 @@ pub async fn process_job<
                 Ok(None)
             } else {
                 let e = res.err().unwrap();
-                emitter.emit("error", e.to_string()).await;
-                jobs.lock().await.remove(&JobSetPair(job.clone(), token));
+                emitter
+                    .emit("error", (e.to_string(), job.name, job.id.clone()))
+                    .await;
 
-                Err(anyhow!("Error processing job"))
+                if !force_closing.load() {
+                    println!("Error processing job: {}", e);
+                    job.move_to_failed(e.to_string(), token, false).await?;
+                    let name = job.name;
+                    let id = job.id.clone();
+                    emitter.emit("failed", (name, id, e.to_string())).await;
+                }
+                jobs.lock().await.remove(&JobSetPair(job.clone(), token));
+                Ok(None)
             }
         }
         Err(e) => {
@@ -677,7 +683,7 @@ pub async fn process_job<
                 emitter.emit("failed", (name, id, e.to_string())).await;
             }
             jobs.lock().await.remove(&JobSetPair(job.clone(), token));
-            Err(anyhow!("Error processing job"))
+            Ok(None)
         }
     }
 }

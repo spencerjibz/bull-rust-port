@@ -106,6 +106,7 @@ impl Scripts {
             "updateData" => Script::new(&get_script("updateData-1.lua")),
             "getRanges" => Script::new(&get_script("getRanges-1.lua")),
             "promote" => Script::new(&get_script("promote-8.lua")),
+            "saveStacktrace" => Script::new(&get_script("saveStacktrace-1.lua"))
 
         };
         Self {

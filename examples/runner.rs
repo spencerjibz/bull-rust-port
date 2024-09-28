@@ -44,11 +44,14 @@ async fn main() -> anyhow::Result<()> {
     let _job = queue
         .add::<_, String>("test-job", data.clone(), job_opts.clone(), None)
         .await?;
-
+    //let count_copy = count.clone();
     let processor = |_data: JobSetPair<JobDataType, String>| async move {
-        //  println!(" processing job {:#?}", data.0);
-
-        // tokio::time::sleep(Duration::from_secs(2)).await;
+        //println!(" processing job {:#?}", _data.0);
+        let job = _data.0;
+        if job.id.contains("9") {
+            //return Err(anyhow::Error::msg("failed here "));
+            panic!("here")
+        }
 
         anyhow::Ok("done".to_owned())
     };
@@ -85,6 +88,13 @@ async fn main() -> anyhow::Result<()> {
             },
         )
         .await;
+    worker
+        .on("failed", |(name, id, error): (String, String, String)| {
+            dbg!(name, id, error);
+            async move {}
+        })
+        .await;
+
     worker.run().await?;
     // tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -93,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
             // dbg!(worker.processing.lock().await.len());
 
             worker.close(false).await;
-            queue.obliterate(true).await?;
+            //queue.obliterate(true).await?;
 
             break;
         }
