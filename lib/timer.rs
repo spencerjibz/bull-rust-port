@@ -1,5 +1,4 @@
 use crate::*;
-use async_event_emitter::AsyncCB;
 
 use futures::future::{BoxFuture, Future, FutureExt};
 use std::time::Duration;

@@ -1,15 +1,5 @@
-use std::cmp;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::error::Error;
-use std::future::IntoFuture;
-use std::sync::Arc;
-
-use crate::backtrace_utils::*;
-
 use async_atomic::Atomic;
-use async_event_emitter::AsyncEventEmitter;
-use enums::BullError;
+use emitter::TypedEmitter;
 use futures::future::{BoxFuture, Future, FutureExt};
 use futures::lock::Mutex;
 use futures::stream::FuturesUnordered;
@@ -17,13 +7,23 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use redis::Cmd;
 use redis::{FromRedisValue, ToRedisArgs};
+use std::cmp;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::error::Error;
+use std::future::IntoFuture;
+use std::sync::Arc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use enums::BullError;
+use enums::WorkerError;
+
+use crate::backtrace_utils::*;
 use crate::timer::Timer;
 use crate::*;
-use enums::WorkerError;
+
 #[derive(Clone, Debug)]
 pub struct JobSetPair<D, R>(pub Job<D, R>, pub &'static str);
 
@@ -42,6 +42,26 @@ impl<D, R> std::hash::Hash for JobSetPair<D, R> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum Events {
+    Closed,
+    Completed,
+    Drained,
+    Error,
+    Failed,
+    Stalled,
+}
+
+type AsyncEventEmitter<D, R> = TypedEmitter<Events, CallBackParams<D, R>, ()>;
+#[derive(Clone)]
+pub enum CallBackParams<D, R> {
+    /// (job, id reason)
+    Completed(Job<D, R>, R),
+    // (job.id, reason)
+    Failed(Option<Job<D, R>>, String),
+    Error(Option<Job<D, R>>, String),
+    Stalled(String),
+}
 /// types
 pub(crate) type WorkerCallback<'a, D, R> =
     dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, Result<R, BullError>> + Send + Sync + 'static;
@@ -53,7 +73,7 @@ pub struct Worker<D, R> {
     pub name: String,
     pub connection: Arc<Pool>,
     pub options: Arc<WorkerOptions>,
-    emitter: Arc<Mutex<AsyncEventEmitter>>,
+    emitter: Arc<AsyncEventEmitter<D, R>>,
     extend_lock_timer: Arc<Mutex<Timer>>,
     pub stalled_check_timer: Arc<Mutex<Timer>>,
     pub closing: &'static Atomic<bool>,
@@ -111,7 +131,7 @@ where
         static TASKS_COMPLETED: Atomic<u64> = Atomic::new(0);
         static BLOCK_UNTIL: Atomic<u64> = Atomic::new(0);
         static RUNNING: Atomic<bool> = Atomic::new(false);
-        let emitter: Arc<Mutex<AsyncEventEmitter>> = Arc::default();
+        let emitter: Arc<AsyncEventEmitter<D, R>> = Arc::new(AsyncEventEmitter::new());
         let options = Arc::new(opts.clone());
         let jobs = Arc::new(Mutex::default());
         let emitter_clone = emitter.clone();
@@ -251,37 +271,38 @@ where
         self.stalled_check_timer.lock().await.run();
         self.extend_lock_timer.lock().await.run();
     }
-    pub async fn on<F, T, C>(&self, event: &str, callback: C) -> String
+    pub async fn on<F, C>(&self, event: Events, callback: C) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        C: Fn(T) -> F + Send + Sync + 'static,
+        C: Fn(CallBackParams<D, R>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         let emitter = self.emitter.clone();
-        let mut emitter = emitter.lock().await;
+
         emitter.on(event, callback)
     }
-    pub async fn once<F, T, C>(&self, event: &str, callback: C) -> String
+    pub async fn once<F, C>(&self, event: Events, callback: C) -> String
     where
-        for<'de> T: Deserialize<'de> + std::fmt::Debug,
-        C: Fn(T) -> F + Send + Sync + 'static,
+        C: Fn(CallBackParams<D, R>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         let emitter = self.emitter.clone();
-        let mut emitter = emitter.lock().await;
         emitter.once(event, callback)
     }
 }
 
 // ---------------------------------------------- UTILITY FUNCTIONS FOR WORKER ---------------------------------------------------------------
 // These functions are to be passed to Tokio::task, so the need their own static parameters
-async fn run_stalled_jobs(
+async fn run_stalled_jobs<D, R>(
     queue_name: String,
     prefix: String,
     pool: Pool,
-    emitter: Arc<Mutex<AsyncEventEmitter>>,
+    emitter: Arc<AsyncEventEmitter<D, R>>,
     options: Arc<WorkerOptions>,
-) -> Result<(), BullError> {
+) -> Result<(), BullError>
+where
+    D: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+{
     let con_string = to_static_str(options.connection.clone());
 
     let mut scripts = Scripts::new(prefix, queue_name, pool);
@@ -292,29 +313,25 @@ async fn run_stalled_jobs(
     if let Some((failed, stalled)) = Some(result) {
         for job_id in failed {
             emitter
-                .lock()
-                .await
-                .emit("failed", job_id.to_string())
-                .await
-                .map_err(|err| BullError::EmitterError(err.to_string()))?;
+                .emit(
+                    Events::Failed,
+                    CallBackParams::Failed(None, job_id.to_string()),
+                )
+                .await;
         }
         for job_id in stalled {
             emitter
-                .lock()
+                .emit(Events::Stalled, CallBackParams::Stalled(job_id.to_string()))
                 .await
-                .emit("stalled", job_id.to_string())
-                .await
-                .map_err(|err| BullError::EmitterError(err.to_string()))?;
         }
 
         return Ok(());
     }
     let e: BullError = WorkerError::FailedToCheckStalledJobs.into();
     emitter
-        .lock()
-        .await
-        .emit("error", (e.to_string(), String::from("all")))
+        .emit(Events::Error, CallBackParams::Error(None, e.to_string()))
         .await;
+
     Err(e)
 }
 async fn extend_locks<
@@ -556,8 +573,6 @@ pub async fn get_completed<
         + 'static
         + Deserialize<'a>,
 >(
-    jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
-    emitter: Arc<Mutex<AsyncEventEmitter>>,
     processing: Arc<ProcessingHandles<Option<Job<D, R>>>>,
 ) -> Vec<Job<D, R>> {
     let mut completed = Vec::new();
@@ -580,7 +595,7 @@ pub async fn get_completed<
 }
 type PackedProcessArgs<D, R> = (
     Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
-    Arc<Mutex<AsyncEventEmitter>>,         //emitter
+    Arc<AsyncEventEmitter<D, R>>,          //emitter
     Arc<WorkerCallback<'static, D, R>>,    // processor
     Arc<WorkerOptions>,                    // workerOptions
     Arc<Queue>,                            // queue
@@ -606,8 +621,6 @@ pub async fn process_job<
     mut job: Job<D, R>,
     token: &'static str,
 ) -> Result<Option<Job<D, R>>, BullError> {
-    use futures::future::{self, Future, FutureExt};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
     let (jobs, emitter, processor, options, queue, force_closing, closing) = args;
 
     let callback = processor.clone();
@@ -615,7 +628,7 @@ pub async fn process_job<
     jobs.lock().await.insert(data.clone());
 
     let returned = BacktraceCatcher::catch(callback(data)).await;
-    let mut emitter = emitter.lock().await;
+    let mut emitter = emitter.clone();
 
     match returned {
         Ok(result) => {
@@ -661,9 +674,12 @@ pub async fn process_job<
                     }
                     MoveToFinishedResults::Completed => {
                         emitter
-                            .emit("completed", (name, job.id.clone(), done))
-                            .await
-                            .map_err(|err| BullError::EmitterError(err.to_string()));
+                            .emit(
+                                Events::Completed,
+                                CallBackParams::Completed(job.clone(), done),
+                            )
+                            .await;
+
                         jobs.lock().await.remove(&JobSetPair(job.clone(), token));
 
                         return Ok(None);
@@ -677,20 +693,23 @@ pub async fn process_job<
         }
         Err(err) => {
             let failed_reason = String::new();
-            dbg!(&err);
             let e = match err {
                 CaughtError::Panic(str) => str,
                 CaughtError::Error(error, backtrace) => format!("{:#?}", backtrace),
             };
             emitter
-                .emit("error", (e.clone(), job.name, job.id.clone()))
+                .emit(
+                    Events::Error,
+                    CallBackParams::Error(Some(job.clone()), e.clone()),
+                )
                 .await;
 
             if !force_closing.load() {
-                job.move_to_failed(e.clone(), token, false).await?;
-                let name = job.name;
-                let id = job.id.clone();
-                emitter.emit("failed", (name, id, e)).await;
+                job.move_to_failed(e.clone(), token, false).await;
+
+                emitter
+                    .emit(Events::Failed, CallBackParams::Failed(Some(job.clone()), e))
+                    .await;
             }
             jobs.lock().await.remove(&JobSetPair(job.clone(), token));
             Ok(None)
@@ -712,7 +731,7 @@ type PackedMainLoopArg<D, R> = (
     &'static Atomic<u64>,                  // block_until
     Arc<Queue>,                            // queue
     &'static Atomic<u64>,                  // tasks_completed,
-    Arc<Mutex<AsyncEventEmitter>>,         // emitter
+    Arc<AsyncEventEmitter<D, R>>,          // emitter
     Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
     Arc<WorkerCallback<'static, D, R>>,    // processor
 );
@@ -774,7 +793,7 @@ async fn main_loop<D, R>(
             processing.lock().await.push(task);
         }
 
-        let mut tasks = get_completed(jobs.clone(), emitter.clone(), processing.clone()).await;
+        let mut tasks = get_completed(processing.clone()).await;
 
         while let Some(job) = tasks.pop() {
             // only process incomplete jobs;
