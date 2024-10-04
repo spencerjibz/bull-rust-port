@@ -126,7 +126,7 @@ impl<Key, CallBackParameter, CallBackReturnType> std::fmt::Debug
     for TypedEmitter<Key, CallBackParameter, CallBackReturnType>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TypedAsyncEventEmitter")
+        f.debug_struct("TypedEventEmitter")
             .finish_non_exhaustive()
     }
 }
