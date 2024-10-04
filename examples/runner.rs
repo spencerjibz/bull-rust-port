@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::time::Instant;
 use uuid::Uuid;
+use worker::CallBackParams;
 lazy_static! {
     static ref QUEUE_NAME: String = {
         let token = Uuid::new_v4().to_string();
@@ -43,10 +44,10 @@ async fn main() -> Result<(), BullError> {
     let _job = queue
         .add::<_, String>("test-job", data.clone(), job_opts.clone(), None)
         .await?;
-    //let count_copy = count.clone();
+
     let processor = |_data: JobSetPair<JobDataType, String>| async move {
         //println!(" processing job {:#?}", _data.0);
-
+        //panic!("test");
         Ok("done".to_owned())
     };
     let now = Instant::now();
@@ -67,20 +68,21 @@ async fn main() -> Result<(), BullError> {
 
     let copy = count.clone();
     worker
-        .on(
-            "completed",
-            move |(_completed_name, _id, returned_value): (String, String, String)| {
-                dbg!(_completed_name);
-                //assert_eq!(id, old_id);
-                assert_eq!(returned_value, "done");
-                //
-                //assert_eq!(completed_name, old_name);
-                println!("{:?} count : {:?}", now.elapsed(), copy.load());
-                copy.fetch_add(1);
+        .on(worker::Events::Completed, move |params| {
+            if let CallBackParams::Completed(job, returned_value) = params {
+                println!("{:#?}", job);
 
-                async move {}
-            },
-        )
+                assert_eq!(returned_value, "done");
+            }
+            //assert_eq!(id, old_id);
+
+            //
+            //assert_eq!(completed_name, old_name);
+            println!("{:?} count : {:?}", now.elapsed(), copy.load());
+            copy.fetch_add(1);
+
+            async move {}
+        })
         .await;
 
     worker.run().await?;
