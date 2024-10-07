@@ -80,7 +80,7 @@ impl RedisConnectionTrait for RedisConnection {
             .arg("KILL")
             .arg("TYPE")
             .arg("normal")
-            .query_async::<_, ()>(&mut conn)
+            .query_async::<_, >(&mut conn)
             .await?;
 
         Ok(())
@@ -88,7 +88,7 @@ impl RedisConnectionTrait for RedisConnection {
     async fn close(&self) -> Result<(), BullError> {
         let mut conn = self.pool.get().await?;
         let _ = redis::cmd("SHUTDOWN")
-            .query_async::<_, ()>(&mut conn)
+            .query_async::<_, >(&mut conn)
             .await?;
         Ok(())
     }
@@ -102,7 +102,7 @@ impl RedisConnectionTrait for Pool {
             .arg("KILL")
             .arg("TYPE")
             .arg("normal")
-            .query_async::<_, ()>(&mut conn)
+            .query_async::<_, >(&mut conn)
             .await?;
 
         Ok(())
@@ -110,7 +110,7 @@ impl RedisConnectionTrait for Pool {
     async fn close(&self) -> Result<(), BullError> {
         let mut conn = self.get().await?;
         let _ = redis::cmd("SHUTDOWN")
-            .query_async::<_, ()>(&mut conn)
+            .query_async::<_, >(&mut conn)
             .await?;
         Ok(())
     }

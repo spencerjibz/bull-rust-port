@@ -36,7 +36,7 @@ async fn main() -> Result<(), BullError> {
     type JobDataType = HashMap<&'static str, &'static str>;
     let worker_opts = WorkerOptions {
         autorun: false,
-        concurrency: 1,
+        concurrency: 12,
         ..Default::default()
     };
 
@@ -70,7 +70,7 @@ async fn main() -> Result<(), BullError> {
     worker
         .on(worker::Events::Completed, move |params| {
             if let CallBackParams::Completed(job, returned_value) = params {
-                println!("{:#?}", job);
+                // println!("{:#?}", job);
 
                 assert_eq!(returned_value, "done");
             }
@@ -90,10 +90,11 @@ async fn main() -> Result<(), BullError> {
 
     loop {
         if count.load() == job_count + 1 {
+            dbg!(count.load());
             // dbg!(worker.processing.lock().await.len());
 
             worker.close(false).await;
-            //queue.obliterate(true).await?;
+            // queue.obliterate(true).await?;
 
             break;
         }

@@ -1,24 +1,27 @@
 use async_atomic::Atomic;
 use emitter::TypedEmitter;
+use enums::BullError;
+use enums::WorkerError;
 use futures::future::{BoxFuture, Future, FutureExt};
 use futures::lock::Mutex;
-use futures::stream::FuturesUnordered;
+use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
 use futures::TryFutureExt;
+use redis::AsyncCommands;
 use redis::Cmd;
 use redis::{FromRedisValue, ToRedisArgs};
-use std::cmp;
+use std::cmp::{self, min};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt::Debug;
 use std::future::IntoFuture;
 use std::sync::Arc;
+use tokio::sync::watch;
+use tokio::sync::RwLock;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-
-use enums::BullError;
-use enums::WorkerError;
 
 use crate::backtrace_utils::*;
 use crate::timer::Timer;
@@ -66,7 +69,7 @@ pub enum CallBackParams<D, R> {
 pub(crate) type WorkerCallback<'a, D, R> =
     dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, Result<R, BullError>> + Send + Sync + 'static;
 
-type ProcessingHandles<R> = Mutex<FuturesUnordered<JoinHandle<Result<R, BullError>>>>;
+type ProcessingHandles<R> = Mutex<FuturesOrdered<JoinHandle<R>>>;
 
 pub struct Worker<D, R> {
     pub id: String,
@@ -74,20 +77,20 @@ pub struct Worker<D, R> {
     pub connection: Arc<Pool>,
     pub options: Arc<WorkerOptions>,
     emitter: Arc<AsyncEventEmitter<D, R>>,
-    extend_lock_timer: Arc<Mutex<Timer>>,
-    pub stalled_check_timer: Arc<Mutex<Timer>>,
+    extend_lock_timer: Arc<Timer>,
+    pub stalled_check_timer: Arc<Timer>,
     pub closing: &'static Atomic<bool>,
     pub closed: &'static Atomic<bool>,
     running: &'static Atomic<bool>,
-    scripts: Arc<Mutex<Scripts>>,
-    pub jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
+    scripts: Arc<Scripts>,
+    pub jobs: Arc<RwLock<HashSet<JobSetPair<D, R>>>>,
     pub processing: Arc<ProcessingHandles<Option<Job<D, R>>>>,
     pub prefix: String,
     force_closing: &'static Atomic<bool>,
     pub processor: Arc<WorkerCallback<'static, D, R>>,
     pub queue: Arc<Queue>,
     block_until: &'static Atomic<u64>,
-    waiting: Arc<Mutex<Option<String>>>,
+    waiting: Arc<Mutex<Option<i32>>>,
     drained: &'static Atomic<bool>,
     pub main_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub tasks_completed: &'static Atomic<u64>,
@@ -133,7 +136,7 @@ where
         static RUNNING: Atomic<bool> = Atomic::new(false);
         let emitter: Arc<AsyncEventEmitter<D, R>> = Arc::new(AsyncEventEmitter::new());
         let options = Arc::new(opts.clone());
-        let jobs = Arc::new(Mutex::default());
+        let jobs = Arc::new(RwLock::new(HashSet::default()));
         let emitter_clone = emitter.clone();
         let queue_name = queue.name.clone();
         let prefix = queue.prefix.to_string();
@@ -169,6 +172,7 @@ where
             let prefix = prefix.clone();
             async move {
                 extend_locks(jobs, options, pool, queue_name, prefix).await;
+                println!("extend_lock");
             }
         });
 
@@ -182,14 +186,14 @@ where
             options,
             emitter,
             prefix: opts.clone().prefix,
-            extend_lock_timer: Arc::new(Mutex::new(extend_lock_timer)),
+            extend_lock_timer: Arc::new(extend_lock_timer),
             force_closing: FORCE_CLOSING.as_ref(),
             processor: Arc::new(callback),
             running: &RUNNING,
             closed: &CLOSED,
             closing: &CLOSING,
-            scripts: Arc::new(Mutex::new(scripts)),
-            stalled_check_timer: Arc::new(Mutex::new(stalled_check_timer)),
+            scripts: Arc::new(scripts),
+            stalled_check_timer: Arc::new(stalled_check_timer),
             queue: Arc::new(queue_copy),
             block_until: &BLOCK_UNTIL,
             waiting: Arc::new(Mutex::default()),
@@ -225,51 +229,48 @@ where
             self.processor.clone(),
         );
 
-        self.start_timers().await;
+        let (stalled_timer, extend_timer) = self.start_timers().await;
 
-        let main_task = tokio::spawn(async_backtrace::frame!(main_loop(
+        let main_loop_task = tokio::spawn(async_backtrace::frame!(main_loop(
             packed_args,
             self.processing.clone()
         )));
+
+        let main_task = tokio::spawn(async move {
+            tokio::select! {
+                    res=  stalled_timer => {
+                   },
+                    res = extend_timer =>  {
+                   }
+                  res =  main_loop_task => {
+                 }
+            };
+        });
         let current_task = self.main_task.clone();
         let mut current_task = current_task.lock().await;
         *current_task = Some(main_task);
         self.running.store(true);
-        //self.timer.as_mut().unwrap().stop();
-        //self.stalled_check_timer.as_mut().unwrap().stop();
-        Ok(())
-    }
 
-    pub async fn cancel_processing(&self) {
-        let processing = self.processing.clone();
-        let processing = processing.lock().await;
-        for job in processing.iter() {
-            if !job.is_finished() {
-                job.abort();
-            }
-        }
+        Ok(())
     }
 
     pub async fn close(&self, force: bool) {
         if force {
             self.force_closing.as_ref().swap(true);
-            // ignore
-            self.cancel_processing().await;
         }
+        self.cancel_timers();
         self.closing.as_ref().swap(true);
-        self.cancel_timers().await;
-        //self.connection.close();
         self.closed.swap(true);
     }
-
-    async fn cancel_timers(&self) {
-        self.extend_lock_timer.lock().await.stop();
-        self.stalled_check_timer.lock().await.stop();
+    async fn start_timers(&self) -> (JoinHandle<()>, JoinHandle<()>) {
+        let stalled = self.stalled_check_timer.run();
+        let extend_timers = self.extend_lock_timer.run();
+        (stalled, extend_timers)
     }
 
-    async fn start_timers(&self) {
-        self.stalled_check_timer.lock().await.run();
-        self.extend_lock_timer.lock().await.run();
+    fn cancel_timers(&self) {
+        self.stalled_check_timer.stop();
+        self.extend_lock_timer.stop();
     }
     pub async fn on<F, C>(&self, event: Events, callback: C) -> String
     where
@@ -336,7 +337,7 @@ where
 }
 async fn extend_locks<
     'a,
-    D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize,
+    D: Deserialize<'a> + Send + Sync + Clone + 'static + Serialize + Debug,
     R: Send
         + Sync
         + Clone
@@ -347,19 +348,18 @@ async fn extend_locks<
         + 'static
         + Deserialize<'a>,
 >(
-    jobs: Arc<Mutex<HashSet<JobSetPair<D, R>>>>,
+    jobs: Arc<RwLock<HashSet<JobSetPair<D, R>>>>,
     options: Arc<WorkerOptions>,
     pool: Pool,
     queue_name: String,
     prefix: String,
 ) -> Result<(), BullError> {
     let mut scripts = Scripts::new(prefix, queue_name, pool);
-    for JobSetPair(job, token) in jobs.lock().await.iter() {
+    for JobSetPair(job, token) in jobs.read().await.iter() {
         scripts
             .extend_lock(&job.id, token, options.lock_duration)
             .await?;
     }
-
     Ok(())
 }
 
@@ -388,7 +388,7 @@ pub fn map_from_vec(value: &[String]) -> HashMap<String, String> {
 pub async fn wait_for_job(
     queue: Arc<Queue>,
     block_until: &'static Atomic<u64>,
-) -> Result<Option<String>, BullError> {
+) -> Result<i32, BullError> {
     use std::time::Duration;
     let mut con = queue.manager.pool.get().await?;
     let pool = queue.manager.pool.clone();
@@ -396,32 +396,32 @@ pub async fn wait_for_job(
     let prefix = queue.prefix.to_owned();
     let mut scripts = Scripts::new(prefix, queue_name, pool);
 
-    let now = generate_timestamp()?;
-    let timeout = if let Some(block_until) = Some(block_until.load()) {
-        cmp::min(block_until.saturating_div(now) as u64, 5000)
-    } else {
-        5000
-    };
-    let timeout = Duration::from_millis(timeout);
+    let current_time = generate_timestamp()?;
 
     let redis_version = scripts.redis_version.clone();
+    let timeout_duration = block_until.load().saturating_sub(current_time);
+    let timeout = min(timeout_duration, 5000) as f64 / 1000.0;
+
+    let timeout = if timeout <= 0.0 { 0.00001 } else { timeout };
 
     let timeout = if *redis_version > *"6.0.0" {
-        (timeout.as_secs() + if timeout.subsec_millis() > 0 { 1 } else { 0 }) as f64
+        (timeout.ceil() as u64) as f64
     } else {
-        timeout.as_secs_f64()
+        timeout
     };
-    let keys = scripts.get_keys(&["wait", "active"]);
+    let marker_key = scripts.to_key("marker");
+    dbg!(timeout);
 
-    let srckey = &keys[0];
-    let dstkey = &keys[1];
-
-    let job_id: Option<String> = Cmd::brpoplpush(srckey, dstkey, timeout as usize)
-        .query_async(&mut con)
-        .await?;
-    Ok(job_id)
+    if let Some((key, member, score)) = con
+        .bzpopmin::<String, Option<(String, String, i32)>>(marker_key, timeout)
+        .await?
+    {
+        if member.is_empty() {
+            return Ok(score);
+        }
+    }
+    Ok(0)
 }
-
 type PackedArgs = (
     &'static Atomic<bool>, // drained
     &'static Atomic<u64>,  // block_util
@@ -492,22 +492,14 @@ async fn move_to_active<
     queue: Arc<Queue>,
     options: Arc<WorkerOptions>,
     token: &str,
-    job_id: Option<String>,
 ) -> Result<Option<Job<D, R>>, BullError> {
     let queue_name = queue.name.clone();
     let prefix = queue.prefix.to_owned();
     let pool = queue.manager.pool.clone();
     let mut script = Scripts::new(prefix, queue_name, pool);
     let mut connection = script.connection.get().await?;
-    if let Some(id) = job_id.clone() {
-        if id.starts_with("0:") {
-            let time: u64 = id.split(':').next().unwrap().parse()?;
-            block_until.swap(time);
-        }
-    }
-    let result = script
-        .move_to_active(token, &options, job_id.clone())
-        .await?;
+
+    let result = script.move_to_active(token, &options).await?;
 
     let (job_data, id, limit_until, delay_until) = result;
     let opt_token = Some(token.to_owned());
@@ -518,7 +510,7 @@ async fn move_to_active<
             block_until,
             queue,
             job_data,
-            job_id,
+            id,
             limit_until,
             delay_until,
         ),
@@ -540,24 +532,29 @@ pub async fn get_next_job<
         + 'static
         + Deserialize<'a>,
 >(
-    waiting: Arc<Mutex<Option<String>>>,
+    waiting: Arc<Mutex<Option<i32>>>,
     drained: &'static Atomic<bool>,
     block_until: &'static Atomic<u64>,
     queue: Arc<Queue>,
     options: Arc<WorkerOptions>,
     token: &str,
-) -> Result<Option<Job<D, R>>, BullError> {
+) -> Option<Job<D, R>> {
     let options = options.clone();
 
-    if waiting.lock().await.is_none() {
-        let result = wait_for_job(queue.clone(), block_until).await?;
-        let copy = result.clone();
-        *waiting.lock().await = copy;
-        let moved = move_to_active(drained, block_until, queue, options, token, result).await?;
-        *waiting.lock().await = None;
-        return Ok(moved);
+    if waiting.lock().await.is_none() && drained.load() {
+        let result = wait_for_job(queue.clone(), block_until).await.ok()?;
+        dbg!(result);
+
+        *waiting.lock().await = Some(result);
+        let moved = move_to_active(drained, block_until, queue, options, token)
+            .await
+            .ok()?;
+        dbg!(&moved);
+        return moved;
     }
-    move_to_active(drained, block_until, queue, options, token, None).await
+    move_to_active(drained, block_until, queue, options, token)
+        .await
+        .ok()?
 }
 
 pub async fn get_completed<
@@ -579,7 +576,7 @@ pub async fn get_completed<
     if let Some(handle) = processing.lock().await.next().await {
         match handle {
             std::result::Result::Ok(result) => {
-                if let std::result::Result::Ok(Some(job)) = result {
+                if let Some(job) = result {
                     completed.push(job.clone());
                 }
             }
@@ -594,15 +591,14 @@ pub async fn get_completed<
     completed
 }
 type PackedProcessArgs<D, R> = (
-    Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
-    Arc<AsyncEventEmitter<D, R>>,          //emitter
-    Arc<WorkerCallback<'static, D, R>>,    // processor
-    Arc<WorkerOptions>,                    // workerOptions
-    Arc<Queue>,                            // queue
-    &'static Atomic<bool>,                 //force_closing,
-    &'static Atomic<bool>,                 // closing,
+    Arc<RwLock<HashSet<JobSetPair<D, R>>>>, // jobs
+    Arc<AsyncEventEmitter<D, R>>,           //emitter
+    Arc<WorkerCallback<'static, D, R>>,     // processor
+    Arc<WorkerOptions>,                     // workerOptions
+    Arc<Queue>,                             // queue
+    &'static Atomic<bool>,                  //force_closing,
+    &'static Atomic<bool>,                  // closing,
 );
-
 /// Process each  job in a separate task
 pub async fn process_job<
     'a,
@@ -620,12 +616,12 @@ pub async fn process_job<
     args: PackedProcessArgs<D, R>,
     mut job: Job<D, R>,
     token: &'static str,
-) -> Result<Option<Job<D, R>>, BullError> {
+) -> Option<Job<D, R>> {
     let (jobs, emitter, processor, options, queue, force_closing, closing) = args;
 
     let callback = processor.clone();
     let data = JobSetPair(job.clone(), token);
-    jobs.lock().await.insert(data.clone());
+    jobs.write().await.insert(data.clone());
 
     let returned = BacktraceCatcher::catch(callback(data)).await;
     let mut emitter = emitter.clone();
@@ -644,13 +640,14 @@ pub async fn process_job<
                 let end = scripts
                     .move_to_completed(
                         &mut job,
-                        serde_json::to_string(&result)?,
+                        serde_json::to_string(&result).ok()?,
                         remove_on_complete,
                         token,
                         &options,
                         fetch,
                     )
-                    .await?;
+                    .await
+                    .ok()?;
                 let done = result.clone();
                 let name = job.name;
                 let id = job.id.clone();
@@ -658,19 +655,15 @@ pub async fn process_job<
                 let finished_job = end;
                 println!("{:?} {}", &finished_job, &name);
 
-                return match finished_job {
+                match finished_job {
                     MoveToFinishedResults::MoveToNext(data) => {
                         let move_to_active: MoveToAciveResult = data.into();
-                        let (data, _id, _ts, _) = convert_errors(move_to_active)?;
-
-                        let static_id = to_static_str(job.id.clone());
-                        if let Some(mut data) = data {
-                            let job: Job<D, R> =
-                                Job::from_raw_job(&mut data, &queue, static_id).await?;
-
-                            return Ok(Some(job));
+                        if let Ok((data, _id, _ts, _)) = convert_errors(move_to_active) {
+                            let static_id = to_static_str(job.id.clone());
+                            if let Some(mut data) = data {
+                                return Job::from_raw_job(&mut data, &queue, static_id).await.ok();
+                            }
                         }
-                        Ok(None)
                     }
                     MoveToFinishedResults::Completed => {
                         emitter
@@ -680,16 +673,19 @@ pub async fn process_job<
                             )
                             .await;
 
-                        jobs.lock().await.remove(&JobSetPair(job.clone(), token));
+                        jobs.write().await.remove(&JobSetPair(job.clone(), token));
 
-                        return Ok(None);
+                        return None;
                     }
                     MoveToFinishedResults::Error(code) => {
-                        Err(finished_errors(code, &job.id, "finished", "active"))
+                        let err = finished_errors(code, &job.id, "finished", "active");
+                        jobs.write().await.remove(&JobSetPair(job.clone(), token));
+
+                        dbg!(err);
                     }
                 };
             }
-            Ok(None)
+            None
         }
         Err(err) => {
             let failed_reason = String::new();
@@ -711,29 +707,28 @@ pub async fn process_job<
                     .emit(Events::Failed, CallBackParams::Failed(Some(job.clone()), e))
                     .await;
             }
-            jobs.lock().await.remove(&JobSetPair(job.clone(), token));
-            Ok(None)
+            jobs.write().await.remove(&JobSetPair(job.clone(), token));
+            None
         }
     }
 }
-//the main loop;
 
 // packed Args;
 
 type PackedMainLoopArg<D, R> = (
-    String,                                // id
-    &'static Atomic<bool>,                 // closed
-    Arc<Mutex<Option<String>>>,            // waiting;
-    Arc<WorkerOptions>,                    // options
-    &'static Atomic<bool>,                 // closing (self.closing),
-    &'static Atomic<bool>,                 // self.force_closing
-    &'static Atomic<bool>,                 // drained
-    &'static Atomic<u64>,                  // block_until
-    Arc<Queue>,                            // queue
-    &'static Atomic<u64>,                  // tasks_completed,
-    Arc<AsyncEventEmitter<D, R>>,          // emitter
-    Arc<Mutex<HashSet<JobSetPair<D, R>>>>, // jobs
-    Arc<WorkerCallback<'static, D, R>>,    // processor
+    String,                                 // id
+    &'static Atomic<bool>,                  // closed
+    Arc<Mutex<Option<i32>>>,                // waiting;
+    Arc<WorkerOptions>,                     // options
+    &'static Atomic<bool>,                  // closing (self.closing),
+    &'static Atomic<bool>,                  // self.force_closing
+    &'static Atomic<bool>,                  // drained
+    &'static Atomic<u64>,                   // block_until
+    Arc<Queue>,                             // queue
+    &'static Atomic<u64>,                   // tasks_completed,
+    Arc<AsyncEventEmitter<D, R>>,           // emitter
+    Arc<RwLock<HashSet<JobSetPair<D, R>>>>, // jobs
+    Arc<WorkerCallback<'static, D, R>>,     // processor
 );
 async fn main_loop<D, R>(
     packed_args: PackedMainLoopArg<D, R>,
@@ -776,27 +771,28 @@ async fn main_loop<D, R>(
             token_prefix += 1;
             let stat_token = to_static_str(format!("{}:{}", id, token_prefix));
             //self.emitter.emit("drained", String::from("")).await;
-            let waiting = waiting.clone();
+            let waiting_clone = waiting.clone();
 
             let queue = queue.clone();
 
             let opts = options.clone();
 
             let task = tokio::spawn(async_backtrace::frame!(get_next_job(
-                waiting,
+                waiting_clone,
                 drained,
                 block_until,
                 queue,
                 opts,
                 stat_token,
             )));
-            processing.lock().await.push(task);
+
+            *waiting.lock().await = None;
+            processing.lock().await.push_back(task);
         }
 
         let mut tasks = get_completed(processing.clone()).await;
 
         while let Some(job) = tasks.pop() {
-            // only process incomplete jobs;
             if !job.is_completed() {
                 let token = to_static_str(job.token.to_owned());
                 let args: PackedProcessArgs<D, R> = (
@@ -815,7 +811,7 @@ async fn main_loop<D, R>(
                     token
                 )));
 
-                processing.lock().await.push(next_job)
+                processing.lock().await.push_back(next_job)
             } else {
                 // progress event task;
                 tasks_completed.fetch_add(1);

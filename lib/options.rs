@@ -13,12 +13,12 @@ pub use derive_redis_json::RedisJsonValue;
 use redis_derive::FromRedisValue;
 pub use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone, Copy)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy)]
 pub struct KeepJobs {
     pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
     pub count: Option<i64>, // Maximum Number of jobs to keep
 }
-#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JobOptions {
     pub priority: i64,
@@ -46,14 +46,14 @@ pub struct JobOptions {
     pub repeat: Option<RepeatOpts>,
 }
 
-#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum BackOffJobOptions {
     Number(i64),
     Opts(BackOffOptions),
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Parent {
     pub id: String,
@@ -62,7 +62,7 @@ pub struct Parent {
     pub fail_parent_on_failure: bool,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RepeatOpts {
     pub pattern: String,
@@ -78,7 +78,7 @@ pub struct RepeatOpts {
     pub end_date: NaiveDateTime,
 }
 
-#[derive(Debug, Deserialize, Serialize, RedisJsonValue, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum RemoveOnCompletionOrFailure {
     Bool(bool), // if true, remove the job when it completes
@@ -122,7 +122,7 @@ impl Default for JobOptions {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveToFinishOpts {
     pub keep_jobs: KeepJobs,
@@ -137,7 +137,7 @@ pub struct MoveToFinishOpts {
     pub limiter: Limiter,
     pub lock_duration: i64,
 }
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JobMoveOpts {
     pub token: String,
@@ -151,7 +151,7 @@ pub struct RetryJobOptions {
     pub count: i64,
     pub timestamp: i64,
 }
-#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerOptions {
     pub autorun: bool, //  condition to start processer at instance creation, default true
@@ -170,7 +170,7 @@ pub struct WorkerOptions {
     pub auto_close: bool, // close worker once all jobs are done
 }
 
-#[derive(Debug, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Limiter {
     pub max: i64,
     pub duration: i64,
@@ -184,7 +184,7 @@ impl Default for Limiter {
         }
     }
 }
-#[derive(Debug, Default, Serialize, Deserialize, RedisJsonValue, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct MetricOptions {
     pub max_data_points: i64,
 }

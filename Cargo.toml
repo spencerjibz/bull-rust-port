@@ -10,12 +10,12 @@ path = "lib/mod.rs"
 [dependencies]
 
 async-trait = "0.1.68"
-deadpool-redis = { version = "0.13.0", features = ["rt_tokio_1"] }
+deadpool-redis = { version = "0.18.0", features = ["rt_tokio_1"] }
 derive-redis-json = "0.1.1"
 futures = "0.3.28"
 maplit = "1.0.2"
 rand = "0.8.5"
-redis = { version = "0.23.0", features = ["tokio-comp", "streams"] }
+redis = { version = "0.27.0", features = ["tokio-comp", "streams"] }
 serde = { version = "1.0.160", features = ["derive"] }
 serde_json = "1.0.96"
 tokio = { version = "1.28.0", features = ["full"] }
@@ -32,6 +32,7 @@ thiserror = "1.0.63"
 backtrace = "0.3.74"
 async-backtrace = "0.2.7"
 derive_more = { version = "1.0.0", features = ["display"] }
+tokio-util = "0.7.12"
 
 
 # standard crate data is left out
