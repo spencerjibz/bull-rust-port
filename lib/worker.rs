@@ -772,6 +772,7 @@ async fn main_loop<D, R>(
             let stat_token = to_static_str(format!("{}:{}", id, token_prefix));
             //self.emitter.emit("drained", String::from("")).await;
             let waiting_clone = waiting.clone();
+            dbg!("here");
 
             let queue = queue.clone();
 

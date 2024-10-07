@@ -37,6 +37,7 @@ struct Arguments {
     parent_dependencies_key: Option<String>,
     parent: Option<Parent>,
     repeat_job_key: Option<String>,
+    debounce_key: Option<String>,
 }
 
 type ScriptCommands = HashMap<&'static str, Script>;
@@ -108,7 +109,12 @@ impl Scripts {
             "getRanges" => Script::new(&get_script("getRanges-1.lua")),
             "promote" => Script::new(&get_script("promote-8.lua")),
             "saveStacktrace" => Script::new(&get_script("saveStacktrace-1.lua")),
-            "extendLock" => Script::new(&get_script("extendLock-2.lua"))
+            "extendLock" => Script::new(&get_script("extendLock-2.lua")),
+            "addStandardJob" => Script::new(&get_script("addStandardJob-8.lua")),
+            "addDelayedJob" =>  Script::new(&get_script("addDelayedJob-6.lua")),
+            "addParentJob" =>  Script::new(&get_script("addParentJob-4.lua")),
+            "addPrioritizedJob" =>  Script::new(&get_script("addPrioritizedJob-8.lua")),
+            "changePriority" => Script::new(&get_script("changePriority-7.lua")),
 
         };
         Self {
@@ -161,12 +167,31 @@ impl Scripts {
         ];
         Ok((keys, args))
     }
-    pub async fn add_job<'s, D: Serialize + Clone + Deserialize<'s>, R: FromRedisValue>(
+    pub async fn add_job<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
         &self,
         job: &Job<D, R>,
     ) -> Result<Option<i64>, BullError> {
-        let e = job.queue.prefix.to_owned();
-        let prefix = self.to_key("");
+        if job.delay > 0 {
+            return self.add_delayed_job(job).await;
+        } else if job.priority > 0 {
+            return self.add_prioritized_job(job).await;
+        }
+        self.add_standard_job(job).await
+    }
+
+    fn add_job_args<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
+        &self,
+        job: &Job<D, R>,
+        with_children_key: Option<String>,
+    ) -> Result<((Vec<u8>, String, Vec<u8>)), BullError> {
         let name = job.name;
         let parent = job.parent.clone();
         let parent_key = job.parent_key.clone();
@@ -174,35 +199,73 @@ impl Scripts {
         let json_data = serde_json::to_string(&job.data.clone())?;
 
         let parent_dep_key = parent_key.as_ref().map(|v| format!("{v}:dependencies"));
+        let e = job.queue.prefix.to_owned();
+        let prefix = self.to_key("");
 
-        let keys = self.get_keys(&[
-            "wait",
-            "paused",
-            "meta",
-            "id",
-            "delayed",
-            "prioritized",
-            "completed",
-            "events",
-            "pc",
-        ]);
-
-        let mut conn = self.connection.get().await?;
         let mut args = Arguments::default();
         args.custom_id = Some(job.id.clone());
         args.key_prefix = prefix.to_string();
         args.name = job.name.to_owned();
         args.timestamp = job.timestamp as u64;
         args.parent_key = job.parent_key.clone();
-        args.wait_children_key = job.with_children_key.clone();
+        args.wait_children_key = with_children_key;
 
         args.parent_key = job.parent_key.clone();
         args.parent = job.parent.clone();
         args.repeat_job_key = job.repeat_job_key.map(|key| key.to_owned());
         let packed_args = rmp_serde::encode::to_vec(&args)?;
         let packed_opts = rmp_serde::encode::to_vec_named(&job.opts)?;
-        let mut script_runner = self.commands.get("addJob").unwrap().prepare_invoke();
 
+        Ok((packed_args, json_data, packed_opts))
+    }
+    async fn add_standard_job<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
+        &self,
+        job: &Job<D, R>,
+    ) -> Result<Option<i64>, BullError> {
+        let keys = self.get_keys(&[
+            "wait",
+            "paused",
+            "meta",
+            "id",
+            "completed",
+            "active",
+            "events",
+            "marker",
+        ]);
+        let (packed_args, json_data, packed_opts) = self.add_job_args(job, None)?;
+        let mut conn = self.connection.get().await?;
+        let mut script_runner = self
+            .commands
+            .get("addStandardJob")
+            .unwrap()
+            .prepare_invoke();
+        let result = script_runner
+            .key(keys)
+            .arg(packed_args)
+            .arg(json_data)
+            .arg(packed_opts)
+            .invoke_async(&mut conn)
+            .await?;
+
+        Ok(result)
+    }
+
+    async fn add_delayed_job<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
+        &self,
+        job: &Job<D, R>,
+    ) -> Result<Option<i64>, BullError> {
+        let keys = self.get_keys(&["marker", "meta", "id", "delayed", "completed", "events"]);
+        let (packed_args, json_data, packed_opts) = self.add_job_args(job, None)?;
+        let mut conn = self.connection.get().await?;
+        let mut script_runner = self.commands.get("addDelayedJob").unwrap().prepare_invoke();
         let result = script_runner
             .key(keys)
             .arg(packed_args)
@@ -212,6 +275,74 @@ impl Scripts {
             .await?;
         Ok(result)
     }
+
+    async fn add_prioritized_job<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
+        &self,
+        job: &Job<D, R>,
+    ) -> Result<Option<i64>, BullError> {
+        let keys = self.get_keys(&[
+            "marker",
+            "meta",
+            "id",
+            "prioritized",
+            "completed",
+            "active",
+            "events",
+            "pc",
+        ]);
+        let (packed_args, json_data, packed_opts) = self.add_job_args(job, None)?;
+        let mut conn = self.connection.get().await?;
+        let mut script_runner = self
+            .commands
+            .get("addPrioritizedJob")
+            .unwrap()
+            .prepare_invoke();
+        let result = script_runner
+            .key(keys)
+            .arg(packed_args)
+            .arg(json_data)
+            .arg(packed_opts)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(result)
+    }
+
+    async fn add_parent_job<
+        's,
+        D: Serialize + Clone + Deserialize<'s>,
+        R: Serialize + Clone + Deserialize<'s>,
+    >(
+        &self,
+        job: &Job<D, R>,
+        with_children_key: Option<String>,
+    ) -> Result<Option<i64>, BullError> {
+        let keys = self.get_keys(&[
+            "marker",
+            "meta",
+            "id",
+            "prioritized",
+            "completed",
+            "active",
+            "events",
+            "pc",
+        ]);
+        let (packed_args, json_data, packed_opts) = self.add_job_args(job, with_children_key)?;
+        let mut conn = self.connection.get().await?;
+        let mut script_runner = self.commands.get("addParentJob").unwrap().prepare_invoke();
+        let result = script_runner
+            .key(keys)
+            .arg(packed_args)
+            .arg(json_data)
+            .arg(packed_opts)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(result)
+    }
+
     pub async fn pause(&self, pause: bool) -> Result<(), BullError> {
         let src = if pause { "wait" } else { "paused" };
         let dst = if pause { "paused" } else { "wait" };
@@ -331,14 +462,13 @@ impl Scripts {
             .invoke_async(&mut connection)
             .await?;
 
-        Ok(result.into())
+        let final_result = result.into();
+        dbg!(&final_result);
+        Ok(final_result)
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn move_to_finished<
-        D: Serialize + Clone,
-        R:  Any + Send + Sync + Clone + 'static,
-    >(
+    async fn move_to_finished<D: Serialize + Clone, R: Any + Send + Sync + Clone + 'static>(
         &self,
         job: &mut Job<D, R>,
         val: String,
@@ -622,10 +752,7 @@ impl Scripts {
         )
         .await
     }
-    pub async fn move_to_failed<
-        D: Serialize + Clone,
-        R:  Any + Send + Sync + 'static + Clone,
-    >(
+    pub async fn move_to_failed<D: Serialize + Clone, R: Any + Send + Sync + 'static + Clone>(
         &self,
         job: &mut Job<D, R>,
         failed_reason: String,
