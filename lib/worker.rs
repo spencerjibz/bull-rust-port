@@ -69,7 +69,7 @@ pub enum CallBackParams<D, R> {
 pub(crate) type WorkerCallback<'a, D, R> =
     dyn Fn(JobSetPair<D, R>) -> BoxFuture<'a, Result<R, BullError>> + Send + Sync + 'static;
 
-type ProcessingHandles<R> = Mutex<FuturesOrdered<JoinHandle<R>>>;
+type ProcessingHandles<R> = Mutex<FuturesUnordered<JoinHandle<R>>>;
 
 pub struct Worker<D, R> {
     pub id: String,
@@ -400,26 +400,23 @@ pub async fn wait_for_job(
 
     let redis_version = scripts.redis_version.clone();
     let timeout_duration = block_until.load().saturating_sub(current_time);
-    let timeout = min(timeout_duration, 5000) as f64 / 1000.0;
+    let mut  timeout = min(timeout_duration, 5000) as f64 / 1000.0;
 
     let timeout = if timeout <= 0.0 { 0.00001 } else { timeout };
 
-    let timeout = if *redis_version > *"6.0.0" {
-        (timeout.ceil() as u64) as f64
+    let mut timeout = if *redis_version > *"6.0.0" {
+        (timeout as u64) as f64
     } else {
         timeout
     };
-    let marker_key = scripts.to_key("marker");
-    dbg!(timeout);
 
-    if let Some((key, member, score)) = con
-        .bzpopmin::<String, Option<(String, String, i32)>>(marker_key, timeout)
-        .await?
-    {
-        if member.is_empty() {
-            return Ok(score);
-        }
-    }
+    timeout = 1000.0;
+    let marker_key = scripts.to_key("marker");
+    let value = con
+        .bzpopmin::<String, redis::Value>(marker_key, timeout)
+        .await?;
+    dbg!(value);
+
     Ok(0)
 }
 type PackedArgs = (
@@ -500,6 +497,7 @@ async fn move_to_active<
     let mut connection = script.connection.get().await?;
 
     let result = script.move_to_active(token, &options).await?;
+    dbg!(&result);
 
     let (job_data, id, limit_until, delay_until) = result;
     let opt_token = Some(token.to_owned());
@@ -541,15 +539,14 @@ pub async fn get_next_job<
 ) -> Option<Job<D, R>> {
     let options = options.clone();
 
-    if waiting.lock().await.is_none() && drained.load() {
+    if waiting.lock().await.is_none() {
         let result = wait_for_job(queue.clone(), block_until).await.ok()?;
-        dbg!(result);
 
         *waiting.lock().await = Some(result);
         let moved = move_to_active(drained, block_until, queue, options, token)
             .await
             .ok()?;
-        dbg!(&moved);
+        *waiting.lock().await = None;
         return moved;
     }
     move_to_active(drained, block_until, queue, options, token)
@@ -772,7 +769,6 @@ async fn main_loop<D, R>(
             let stat_token = to_static_str(format!("{}:{}", id, token_prefix));
             //self.emitter.emit("drained", String::from("")).await;
             let waiting_clone = waiting.clone();
-            dbg!("here");
 
             let queue = queue.clone();
 
@@ -788,7 +784,7 @@ async fn main_loop<D, R>(
             )));
 
             *waiting.lock().await = None;
-            processing.lock().await.push_back(task);
+            processing.lock().await.push(task);
         }
 
         let mut tasks = get_completed(processing.clone()).await;
@@ -805,14 +801,13 @@ async fn main_loop<D, R>(
                     force_closing,
                     closing,
                 );
-
                 let next_job = tokio::spawn(async_backtrace::frame!(process_job(
                     args,
                     job.clone(),
                     token
                 )));
 
-                processing.lock().await.push_back(next_job)
+                processing.lock().await.push(next_job)
             } else {
                 // progress event task;
                 tasks_completed.fetch_add(1);

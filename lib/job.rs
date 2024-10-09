@@ -88,7 +88,13 @@ impl<
 impl<
         'a,
         D: Deserialize<'a> + Serialize + Clone + Send + Sync,
-        R: Deserialize<'a> + Serialize + Send + Sync + Clone + 'static + std::fmt::Debug,
+        R: Deserialize<'a>
+            + Serialize
+            + Send
+            + Sync
+            + Clone
+            + 'static
+            + std::fmt::Debug,
     > Job<D, R>
 {
     pub fn is_completed(&self) -> bool {
@@ -325,7 +331,7 @@ impl<
                     .unwrap()
                     .key(keys)
                     .arg(args)
-                    .invoke_async::<_>(&mut conn)
+                    .invoke_async::<_, >(&mut conn)
                     .await?;
                 command = "delayed";
             } else {
@@ -338,7 +344,7 @@ impl<
                     .unwrap()
                     .key(keys)
                     .arg(args)
-                    .invoke_async::<_>(&mut conn)
+                    .invoke_async::<_, >(&mut conn)
                     .await?;
                 command = "retryJob";
             }

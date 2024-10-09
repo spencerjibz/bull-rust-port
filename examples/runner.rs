@@ -45,11 +45,7 @@ async fn main() -> Result<(), BullError> {
         .add::<_, String>("test-job", data.clone(), job_opts.clone(), None)
         .await?;
 
-    let processor = |_data: JobSetPair<JobDataType, String>| async move {
-        //println!(" processing job {:#?}", _data.0);
-        //panic!("test");
-        Ok("done".to_owned())
-    };
+    let processor = |_data: JobSetPair<JobDataType, String>| async move { Ok("done".to_owned()) };
     let now = Instant::now();
 
     let worker = Worker::build(&QUEUE_NAME, queue, processor, worker_opts).await?;
@@ -75,8 +71,6 @@ async fn main() -> Result<(), BullError> {
                 assert_eq!(returned_value, "done");
             }
             //assert_eq!(id, old_id);
-
-            //
             //assert_eq!(completed_name, old_name);
             println!("{:?} count : {:?}", now.elapsed(), copy.load());
             copy.fetch_add(1);
