@@ -27,7 +27,7 @@ pub struct Job<D, R> {
     pub opts: JobOptions,
     pub data: D,
     pub return_value: Option<R>,
-    scripts: Arc<Mutex<script::Scripts>>,
+    scripts: Arc<script::Scripts>,
     pub repeat_job_key: Option<&'static str>,
     pub failed_reason: Option<String>,
     pub stack_trace: Vec<String>,
@@ -78,7 +78,7 @@ impl<D: Serialize, R: Serialize> Serialize for Job<D, R> {
 
 impl<
         D: Deserialize<'static> + Serialize + Clone + std::fmt::Debug + Send + Sync,
-        R: Deserialize<'static> + Serialize + FromRedisValue + Any + Send + Sync + Clone,
+        R: Deserialize<'static> + Serialize + Any + Send + Sync + Clone,
     > PartialEq for Job<D, R>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -92,7 +92,6 @@ impl<
             + Serialize
             + Send
             + Sync
-            + FromRedisValue
             + Clone
             + 'static
             + std::fmt::Debug,
@@ -102,14 +101,10 @@ impl<
         self.return_value.is_some() && self.finished_on > Some(0)
     }
     pub async fn get_state(&self) -> Result<String, BullError> {
-        self.scripts.lock().await.get_state(&self.id).await
+        self.scripts.get_state(&self.id).await
     }
     pub async fn remove(&self, remove_children: bool) -> Result<(), BullError> {
-        self.scripts
-            .lock()
-            .await
-            .remove(self.id.clone(), remove_children)
-            .await
+        self.scripts.remove(self.id.clone(), remove_children).await
     }
 
     pub async fn update_progress<T: Serialize>(
@@ -117,20 +112,11 @@ impl<
         progress: T,
     ) -> Result<Option<i8>, BullError> {
         self.progress = Some(serde_json::to_string(&progress)?);
-        self.scripts
-            .lock()
-            .await
-            .update_progress(&self.id, progress)
-            .await
+        self.scripts.update_progress(&self.id, progress).await
     }
 
     pub async fn update_data(&mut self, data: D) -> Result<(), BullError> {
-        let result = self
-            .scripts
-            .lock()
-            .await
-            .update_data(&self.id, data.clone())
-            .await?;
+        let result = self.scripts.update_data(&self.id, data.clone()).await?;
         self.data = data;
 
         Ok(())
@@ -180,11 +166,11 @@ impl<
             stack_trace: vec![],
             remove_on_fail: opts.remove_on_fail,
             with_children_key: None,
-            scripts: Arc::new(Mutex::new(Scripts::new(
+            scripts: Arc::new(Scripts::new(
                 prefix.to_string(),
                 queue_name.to_owned(),
                 dup_conn,
-            ))),
+            )),
             parent_key,
             discarded: false,
             parent,
@@ -265,32 +251,27 @@ impl<
     }
 
     pub async fn promote(&mut self) -> Result<(), BullError> {
-        let result = self.scripts.lock().await.promote(&self.id).await?;
+        let result = self.scripts.promote(&self.id).await?;
         self.delay = 0;
         Ok(())
     }
     pub async fn is_delayed(&self) -> Result<bool, BullError> {
         let mut conn = self.queue.manager.pool.get().await?;
         let score: Option<isize> = conn
-            .zscore(self.scripts.lock().await.to_key("delayed"), &self.id)
+            .zscore(self.scripts.to_key("delayed"), &self.id)
             .await?;
         Ok(score.is_some())
     }
     pub async fn is_in_zset(&self, set: &str) -> Result<bool, BullError> {
         let mut conn = self.queue.manager.pool.get().await?;
-        let key = self.scripts.lock().await.to_key(set);
+        let key = self.scripts.to_key(set);
         let score: Option<isize> = conn.zscore(&key, &self.id).await?;
         Ok(score.is_some())
     }
 
     pub async fn is_in_in_list(&self, list_name: &str) -> Result<bool, BullError> {
-        let key = self.scripts.lock().await.to_key(list_name);
-        let result = self
-            .scripts
-            .lock()
-            .await
-            .is_job_in_list(key.as_str(), &self.id)
-            .await?;
+        let key = self.scripts.to_key(list_name);
+        let result = self.scripts.is_job_in_list(key.as_str(), &self.id).await?;
         Ok(result)
     }
 
@@ -341,37 +322,29 @@ impl<
                     move_to_failed = true;
                 }
                 let timestamp = generate_timestamp()?;
-                let (keys, args) = self.scripts.lock().await.move_to_delayed_args(
-                    &self.id,
-                    timestamp as i64 + num,
-                    token,
-                )?;
+                let (keys, args) =
+                    self.scripts
+                        .move_to_delayed_args(&self.id, timestamp as i64 + num, token)?;
                 self.scripts
-                    .lock()
-                    .await
                     .commands
                     .get("moveToDelayed")
                     .unwrap()
                     .key(keys)
                     .arg(args)
-                    .invoke_async::<_, ()>(&mut conn)
+                    .invoke_async::<_, >(&mut conn)
                     .await?;
                 command = "delayed";
             } else {
-                let (keys, args) =
-                    self.scripts
-                        .lock()
-                        .await
-                        .retry_jobs_args(&self.id, self.opts.lifo, token)?;
+                let (keys, args) = self
+                    .scripts
+                    .retry_jobs_args(&self.id, self.opts.lifo, token)?;
                 self.scripts
-                    .lock()
-                    .await
                     .commands
                     .get("retryJobs")
                     .unwrap()
                     .key(keys)
                     .arg(args)
-                    .invoke_async::<_, ()>(&mut conn)
+                    .invoke_async::<_, >(&mut conn)
                     .await?;
                 command = "retryJob";
             }
@@ -386,8 +359,6 @@ impl<
             let remove_onfail = self.opts.remove_on_fail.clone().unwrap_or_default();
             let result = job
                 .scripts
-                .lock()
-                .await
                 .move_to_failed(
                     self,
                     err_message,
@@ -413,7 +384,7 @@ impl<
         log_row: &str,
         keep_logs: Option<isize>,
     ) -> Result<isize, BullError> {
-        let scripts = self.scripts.lock().await;
+        let scripts = self.scripts.clone();
         let key = scripts.to_key(format!("{job_id}:logs").as_str());
         let mut connection = scripts.connection.get().await?;
         let mut pipeline = redis::pipe();
@@ -445,13 +416,9 @@ impl<
             let stack_trace = serde_json::to_string(&self.stack_trace)?;
             let (keys, args) =
                 self.scripts
-                    .lock()
-                    .await
                     .save_stacktrace_args(&self.id, &stack_trace, &err_stack);
 
             self.scripts
-                .lock()
-                .await
                 .commands
                 .get("saveStacktrace")
                 .unwrap()
@@ -480,7 +447,7 @@ impl<D: std::fmt::Debug, R: std::fmt::Debug> std::fmt::Debug for Job<D, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
             .field("name", &self.name)
-            //.field("queue", &self.queue)
+            .field("queue", &self.queue)
             .field("timestamp", &self.timestamp)
             .field("attempts_made", &self.attempts_made)
             .field("attempts", &self.attempts)
@@ -489,7 +456,7 @@ impl<D: std::fmt::Debug, R: std::fmt::Debug> std::fmt::Debug for Job<D, R> {
             .field("progress", &self.progress)
             .field("opts", &self.opts)
             .field("data", &self.data)
-            // .field("scripts", &self.scripts)
+            .field("scripts", &self.scripts)
             .field("repeat_job_key", &self.repeat_job_key)
             .field("failed_reason", &self.failed_reason)
             .field("stack_trace", &self.stack_trace)
@@ -523,7 +490,8 @@ pub struct Data {
 }
 use derive_redis_json::RedisJsonValue;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, RedisJsonValue)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+
 pub struct ReturnedData {
     pub status: String,
     pub count: f32,

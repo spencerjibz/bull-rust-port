@@ -1,6 +1,9 @@
 use crate::*;
 
+use async_atomic::Atomic;
 use futures::future::{BoxFuture, Future, FutureExt};
+use std::cell::RefCell;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::{fmt::Debug, sync::Arc};
 use tokio::{
@@ -8,13 +11,13 @@ use tokio::{
     time::{sleep, Instant},
 };
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
-
+use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct Timer {
     interval: Duration,
     callback: Arc<EmptyCb>,
-    task: Option<Arc<JoinHandle<()>>>,
-    _ok: bool,
+    cancel: CancellationToken,
+    status: Arc<AtomicBool>,
 }
 
 impl Timer {
@@ -29,31 +32,34 @@ impl Timer {
         Self {
             interval,
             callback: Arc::new(parsed_cb),
-            task: None,
-            _ok: true,
+            cancel: Default::default(),
+            status: Arc::default(),
         }
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&self) -> JoinHandle<()> {
         let mut interval = tokio::time::interval(self.interval);
         let callback = Arc::clone(&self.callback);
-        let mut _ok = self._ok;
+        let token = self.cancel.clone();
         let mut task = task::spawn(async move {
-            loop {
+            while !token.is_cancelled() {
                 interval.tick().await;
 
                 callback().await;
             }
         });
-        self.task = Some(Arc::new(task));
+        self.status
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        task
     }
 
-    pub fn stop(&mut self) {
-        if let Some(task) = &self.task {
-            self._ok = false;
-            task.abort();
-            self.task = None;
-        }
+    pub fn stop(&self) {
+        self.cancel.cancel();
+        self.status
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn is_running(&self) -> bool {
+        self.status.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -67,11 +73,11 @@ mod tests {
     async fn runs_and_stops() {
         let mut timer = Timer::new(1, || async { println!("hello") });
         timer.run();
-        dbg!(timer._ok);
+        dbg!(timer.is_running());
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         timer.stop();
 
-        assert!(!timer._ok);
+        assert!(!timer.is_running());
     }
 }
