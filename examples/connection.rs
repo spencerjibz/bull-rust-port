@@ -25,16 +25,16 @@ async fn main() -> Result<(), BullError> {
     let job = Job::<Data, ReturnedData>::from_json(&queue, contents, "207").await?;
     println!("{:#?}", job_parsing_time.elapsed());
     println!("{:#?}", job);
-    use chrono::{DateTime, NaiveDateTime, Utc};
+    use chrono::{DateTime, Utc};
     if let (Some(finished_on), Some(processed_on), date) =
         (job.finished_on, job.processed_on, job.timestamp)
     {
-        let finished_on = NaiveDateTime::from_timestamp_millis(finished_on as i64).unwrap();
-        let processed_on = NaiveDateTime::from_timestamp_millis(processed_on as i64).unwrap();
-        let date = NaiveDateTime::from_timestamp_millis(date);
+        let finished_on = DateTime::from_timestamp_millis(finished_on as i64).unwrap();
+        let processed_on = DateTime::from_timestamp_millis(processed_on as i64).unwrap();
+        let date = DateTime::from_timestamp_millis(date);
         println!("finished_on: {:#?}", finished_on);
         println!("processed_on: {:#?}", processed_on);
-        let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(date.unwrap(), Utc);
+        let datetime: DateTime<Utc> = date.unwrap();
         // Format the datetime how you want
         let newdate = datetime.format("%Y-%m-%d %H:%M:%S");
         println!("date: {}", newdate);

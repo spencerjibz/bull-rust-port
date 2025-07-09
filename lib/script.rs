@@ -603,7 +603,6 @@ impl Scripts {
         }
     }
     pub async fn move_to_completed<
-        's,
         D: Serialize + Clone,
         R: FromRedisValue + Send + Sync + Clone + 'static,
     >(

@@ -14,7 +14,7 @@ pub enum CaughtError {
 pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
-    fn capture_panic_info(info: &panic::PanicInfo<'_>) -> String {
+    fn capture_panic_info(info: &panic::PanicHookInfo) -> String {
         let backtrace = Backtrace::new();
         let payload = info
             .payload()
@@ -96,7 +96,7 @@ mod tests {
     #[tokio_shared_rt::test(shared = false)]
     async fn test_catch_error() {
         async fn erroring_function() -> Result<(), IoError> {
-            Err(IoError::new(ErrorKind::Other, "Test error"))
+            Err(IoError::other("Test error"))
         }
 
         let result = BacktraceCatcher::catch(erroring_function()).await;
