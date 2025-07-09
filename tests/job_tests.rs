@@ -72,7 +72,6 @@ mod job {
         queue.obliterate(true).await?;
         Ok(())
     }
-
     #[tokio_shared_rt::test]
     async fn set_and_get_progress_as_number() -> Result<(), BullError> {
         let mut config = HashMap::new();

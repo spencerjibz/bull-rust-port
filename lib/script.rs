@@ -57,7 +57,8 @@ impl std::fmt::Debug for Scripts {
             .field("prefix", &self.prefix)
             .field("queue_name", &self.queue_name)
             .field("keys", &self.keys)
-            .field("commands", &self.commands)
+            .field("commands", &self.commands.keys())
+            .field("redis_version", &self.redis_version)
             .finish()
     }
 }
@@ -94,19 +95,20 @@ impl Scripts {
             "addJob" => Script::new(&get_script("addJob-9.lua")),
             "getCounts" =>  Script::new(&get_script("getCounts-1.lua")),
             "obliterate" =>  Script::new(&get_script("obliterate-2.lua")),
-            "pause" => Script::new(&get_script("pause-4.lua")),
-            "moveToActive" =>  Script::new(&get_script("moveToActive-10.lua")),
-            "moveToFinished" =>  Script::new(&get_script("moveToFinished-12.lua")),
-            "moveStalledJobsToWait"=>  Script::new(&get_script("moveStalledJobsToWait-8.lua")),
-            "retryJobs" => Script::new(&get_script("retryJobs-6.lua")),
-            "updateProgress"=>  Script::new(&get_script("updateProgress-2.lua")),
+            "pause" => Script::new(&get_script("pause-7.lua")),
+            "moveToActive" =>  Script::new(&get_script("moveToActive-11.lua")),
+            "moveToFinished" =>  Script::new(&get_script("moveToFinished-14.lua")),
+            "moveStalledJobsToWait"=>  Script::new(&get_script("moveStalledJobsToWait-9.lua")),
+            "retryJobs" => Script::new(&get_script("retryJob-10.lua")),
+            "updateProgress"=>  Script::new(&get_script("updateProgress-3.lua")),
             "remove" => Script::new(&get_script("removeJob-1.lua")),
             "getState" => Script::new(&get_script("getState-7.lua")),
             "getStateV2" => Script::new(&get_script("getStateV2-7.lua")),
             "updateData" => Script::new(&get_script("updateData-1.lua")),
             "getRanges" => Script::new(&get_script("getRanges-1.lua")),
             "promote" => Script::new(&get_script("promote-8.lua")),
-            "saveStacktrace" => Script::new(&get_script("saveStacktrace-1.lua"))
+            "saveStacktrace" => Script::new(&get_script("saveStacktrace-1.lua")),
+            "extendLock" => Script::new(&get_script("extendLock-2.lua"))
 
         };
         Self {
@@ -186,24 +188,15 @@ impl Scripts {
         ]);
 
         let mut conn = self.connection.get().await?;
-
         let mut args = Arguments::default();
-
         args.custom_id = Some(job.id.clone());
-
         args.key_prefix = prefix.to_string();
-
         args.name = job.name.to_owned();
-
         args.timestamp = job.timestamp as u64;
-        // write Optional parent key
         args.parent_key = job.parent_key.clone();
-
-        // with_children_key
         args.wait_children_key = job.with_children_key.clone();
 
         args.parent_key = job.parent_key.clone();
-
         args.parent = job.parent.clone();
         args.repeat_job_key = job.repeat_job_key.map(|key| key.to_owned());
         let packed_args = rmp_serde::encode::to_vec(&args)?;
@@ -222,7 +215,15 @@ impl Scripts {
     pub async fn pause(&self, pause: bool) -> Result<(), BullError> {
         let src = if pause { "wait" } else { "paused" };
         let dst = if pause { "paused" } else { "wait" };
-        let keys = self.get_keys(&[src, dst, "meta", "events"]);
+        let keys = self.get_keys(&[
+            src,
+            dst,
+            "meta",
+            "prioritized",
+            "events",
+            "delayed",
+            "marker",
+        ]);
         let f_ags = if pause {
             "paused".as_bytes()
         } else {
@@ -255,13 +256,17 @@ impl Scripts {
         } else {
             (timestamp * 1000)
         };
-        let keys = self.get_keys(&["", "events", &current, "wait", "paused", "meta"]);
+        let keys = self.get_keys(&["", "events", &current, "wait", "paused", "meta", "marker"]);
+        let e = &self.prefix.clone();
+        let prefix = self.to_key("");
+
         let mut conn = self.connection.get().await?;
         let result = self
             .commands
             .get("retryJobs")
             .unwrap()
             .key(keys)
+            .arg(prefix)
             .arg(count)
             .arg(timestamp)
             .arg(current)
@@ -295,7 +300,6 @@ impl Scripts {
         &self,
         token: &str,
         opts: &WorkerOptions,
-        job_id: Option<String>,
     ) -> Result<MoveToAciveResult, BullError> {
         let id: u16 = rand::random();
         let timestamp = generate_timestamp()?;
@@ -316,6 +320,7 @@ impl Scripts {
             "paused",
             "meta",
             "pc",
+            "marker",
         ]);
 
         let move_opts = JobMoveOpts {
@@ -334,7 +339,6 @@ impl Scripts {
             .key(keys)
             .arg(prefix)
             .arg(timestamp)
-            .arg(job_id)
             .arg(packed_opts)
             .invoke_async(&mut connection)
             .await?;
@@ -343,10 +347,7 @@ impl Scripts {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn move_to_finished<
-        D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + Clone + 'static,
-    >(
+    async fn move_to_finished<D: Serialize + Clone, R: Any + Send + Sync + Clone + 'static>(
         &self,
         job: &mut Job<D, R>,
         val: String,
@@ -370,10 +371,12 @@ impl Scripts {
             "paused",
             "meta",
             "pc",
+            target,
         ]);
-        keys.insert(8, self.to_key(target));
-        keys.insert(9, self.to_key(job.id.as_str()));
-        keys.insert(11, metrics_key);
+
+        keys.push(self.to_key(job.id.as_str()));
+        keys.push(metrics_key);
+        keys.push(self.to_key("marker"));
 
         let should_remove_key = if target == "completed" {
             opts.remove_on_completion.clone()
@@ -395,7 +398,7 @@ impl Scripts {
             fail_parent_on_failure: job.opts.fail_parent_on_failure,
             remove_deps_on_failure: job.opts.remove_deps_on_failure,
         };
-        let fetch = if fetch_next { "fetch" } else { "" };
+        let fetch = if fetch_next { "1" } else { "" };
         let d = &self.to_key("");
         let mut sec_last = self.to_key("");
 
@@ -412,13 +415,12 @@ impl Scripts {
             .arg(prop_val)
             .arg(&val)
             .arg(target)
-            .arg("")
             .arg(fetch)
             .arg(sec_last)
             .arg(packed_opts)
             .invoke_async(&mut connection)
             .await?;
-
+        dbg!(&result);
         if let MoveToFinishedResults::Error(code) = result {
             finished_errors(code, &job.id, "finished", "active");
         }
@@ -486,9 +488,9 @@ impl Scripts {
         duration: i64,
     ) -> Result<u64, BullError> {
         let stalled = self.to_key("stalled");
-        let keys = vec![self.to_key(job_id) + ":lock", stalled.to_string()];
+        let keys = vec![self.to_key(job_id) + ":lock", stalled];
         let mut conn = self.connection.get().await?;
-        let result: u64 = self
+        let extend_lock_result: u64 = self
             .commands
             .get("extendLock")
             .unwrap()
@@ -498,7 +500,8 @@ impl Scripts {
             .arg(job_id)
             .invoke_async(&mut conn)
             .await?;
-        Ok(result)
+        dbg!(extend_lock_result);
+        Ok(extend_lock_result)
     }
     pub async fn move_stalled_jobs_to_wait(
         &self,
@@ -515,6 +518,7 @@ impl Scripts {
             "stalled-check",
             "meta",
             "paused",
+            "marker",
             "events",
         ]);
         let mut conn = self.connection.get().await?;
@@ -537,7 +541,11 @@ impl Scripts {
         job_id: &str,
         progress: P,
     ) -> Result<Option<i8>, BullError> {
-        let keys = [self.to_key(job_id), self.to_key("events")];
+        let keys = [
+            self.to_key(job_id),
+            self.to_key("events"),
+            self.to_key("meta"),
+        ];
 
         let progress = serde_json::to_string(&progress)?;
         let mut conn = self.connection.get().await?;
@@ -626,10 +634,7 @@ impl Scripts {
         )
         .await
     }
-    pub async fn move_to_failed<
-        D: Serialize + Clone,
-        R: FromRedisValue + Any + Send + Sync + 'static + Clone,
-    >(
+    pub async fn move_to_failed<D: Serialize + Clone, R: Any + Send + Sync + 'static + Clone>(
         &self,
         job: &mut Job<D, R>,
         failed_reason: String,
@@ -735,10 +740,9 @@ impl Scripts {
         if timestamp > 0 {
             max_timestamp = max_timestamp * 0x1000 + (int & 0xfff);
         }
-        let mut keys = self.get_keys(&["wait", "active", "priority", "delayed"]);
+        let mut keys = self.get_keys(&["marker", "active", "prioritized", "delayed"]);
         keys.push(self.to_key(job_id));
         keys.push(self.to_key("events"));
-        keys.push(self.to_key("paused"));
         keys.push(self.to_key("meta"));
 
         let current_timestamp = generate_timestamp()?;
@@ -872,7 +876,7 @@ impl FromRedisValue for MoveToAciveResults {
         use std::result::Result::Ok;
         match *v {
             // If the Redis value is a bulk string or a list, try to match the expected structure
-            Value::Bulk(ref items) if items.len() == 3 => {
+            Value::Array(ref items) if items.len() == 3 => {
                 if let (Value::Int(a), Value::Int(b), Value::Int(c)) =
                     (&items[0], &items[1], &items[2])
                 {
@@ -889,8 +893,8 @@ impl FromRedisValue for MoveToAciveResults {
                         *a as i32, *b as i32, *c as i32, *d as u64,
                     )));
                 } else if let (
-                    Value::Bulk(data_strings),
-                    Value::Data(job_id),
+                    Value::Array(data_strings),
+                    Value::BulkString(job_id),
                     Value::Int(expire_time),
                 ) = (&items[0], &items[1], &items[2])
                 {
@@ -947,6 +951,7 @@ pub enum MoveToFinishedResults {
 
 impl FromRedisValue for MoveToFinishedResults {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        dbg!(&v);
         use std::result::Result::Ok;
         match *v {
             Value::Int(0) => {
@@ -985,8 +990,8 @@ pub fn generate_timestamp() -> Result<u64, BullError> {
     use std::time::SystemTime;
     let result = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs()
-        * 1000;
+        .as_millis() as u64;
+
     Ok(result)
 }
 

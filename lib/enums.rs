@@ -1,11 +1,13 @@
+use async_backtrace::backtrace;
 use derive_redis_json::RedisJsonValue;
 use redis::FromRedisValue;
 use redis_json::error;
 use serde::{Deserialize, Serialize};
+use std::backtrace::Backtrace;
 
 use thiserror::Error;
 #[repr(i8)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize, RedisJsonValue, Error)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize, Error)]
 pub enum JobError {
     #[error("The job does not exist")]
     JobNotFound = -1,
@@ -62,7 +64,7 @@ impl TryFrom<i8> for JobError {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, RedisJsonValue, Error)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, Error)]
 pub enum PttlError {
     #[error("No expiration associated with Key({0})")]
     NoExpirationWithKey(String),
@@ -110,6 +112,6 @@ pub enum BullError {
     #[error("Emitter: {0}")]
     EmitterError(String),
 
-    #[error("WorkerError: {0}")]
+    #[error("WorkerError: {0:#?}")]
     WorkerError(#[from] WorkerError),
 }
