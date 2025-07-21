@@ -1,5 +1,4 @@
 use async_atomic::Atomic;
-use emitter::TypedEmitter;
 use futures::future::{BoxFuture, Future, FutureExt};
 use futures::lock::Mutex;
 use futures::stream::FuturesUnordered;
@@ -15,6 +14,7 @@ use std::future::IntoFuture;
 use std::sync::Arc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
+use typed_emitter::TypedEmitter;
 use uuid::Uuid;
 
 use enums::BullError;

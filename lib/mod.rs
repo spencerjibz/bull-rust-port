@@ -16,6 +16,4 @@ mod queue;
 pub mod redis_connection;
 pub mod script;
 pub mod timer;
-
-pub mod emitter;
 pub mod worker;
