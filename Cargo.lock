@@ -147,6 +147,7 @@ dependencies = [
  "async-trait",
  "backtrace",
  "chrono",
+ "dashmap 6.1.0",
  "deadpool-redis",
  "derive-redis-json",
  "derive_more",

@@ -33,6 +33,7 @@ backtrace = "0.3.74"
 async-backtrace = "0.2.7"
 derive_more = { version = "1.0.0", features = ["display"] }
 typed-emitter = "0.1.2"
+dashmap = "6.1.0"
 
 
 # standard crate data is left out
